@@ -47,29 +47,29 @@ class GeneratorHierarchical0(nn.Module):
             nn.Dropout(p=dropout_rate),
         )
 
-        self.study_embedding = weight_norm(nn.Embedding(len(meta['s2i']), content_channels))
-        self.task_embedding = weight_norm(nn.Embedding(len(meta['t2i']), content_channels))
-        self.contrast_embedding = weight_norm(nn.Embedding(len(meta['c2i']), content_channels))
+        self.study_embedding = nn.Embedding(len(meta['s2i']), content_channels)
+        self.task_embedding = nn.Embedding(len(meta['t2i']), content_channels)
+        self.contrast_embedding = nn.Embedding(len(meta['c2i']), content_channels)
 
         self.fcs = nn.ModuleList([
             nn.Sequential(
-                weight_norm(nn.Linear(content_channels, content_channels)),
+                nn.Linear(content_channels, content_channels),
                 nn.Dropout(dropout_rate),
             ),
             nn.Sequential(
-                weight_norm(nn.Linear(2 * content_channels, content_channels)),
+                nn.Linear(2 * content_channels, content_channels),
                 nn.Dropout(dropout_rate),
             ),
             nn.Sequential(
-                weight_norm(nn.Linear(3 * content_channels, content_channels)),
+                nn.Linear(3 * content_channels, content_channels),
                 nn.Dropout(dropout_rate),
             ),
             nn.Sequential(
-                weight_norm(nn.Linear(3 * content_channels, content_channels)),
+                nn.Linear(3 * content_channels, content_channels),
                 nn.Dropout(dropout_rate),
             ),
             nn.Sequential(
-                weight_norm(nn.Linear(3 * content_channels, content_channels)),
+                nn.Linear(3 * content_channels, content_channels),
                 nn.Dropout(dropout_rate),
             ),
         ])

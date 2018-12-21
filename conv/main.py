@@ -227,7 +227,7 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
                 disc_optimizer.zero_grad()
                 rf, spred, tpred, cpred = model.discriminator(x, predict_s=r_labels, svec=svec, tvec=tvec)
                 # pdb.set_trace()
-                L_gan = torch.log(rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), r_labels)
+                L_gan = -torch.log(rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), r_labels)
                 L_clf_s = F.cross_entropy(spred, svec)
                 L_clf_t = F.cross_entropy(tpred, tvec)
                 L_clf_c = F.cross_entropy(cpred, cvec)
@@ -254,7 +254,7 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
                 Gz = model.generator(z, svec, tvec, cvec)
                 rf, spred, tpred, cpred = model.discriminator(x)  # , predict_s=r_labels, svec=svec, tvec=tvec)
                 # pdb.set_trace()
-                L_gan = torch.log(1 - rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), f_labels)
+                L_gan = -torch.log(1 - rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), f_labels)
                 # L_clf_s = F.cross_entropy(spred, svec)
                 # L_clf_t = F.cross_entropy(tpred, tvec)
                 # L_clf_c = F.cross_entropy(cpred, cvec)
@@ -278,6 +278,7 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
                 for pn, p in model.discriminator.named_parameters():
                     if p.requires_grad:
                         losses["norm/disc/{}".format(pn)] = p.detach().norm()
+                        losses["norm/disc/grad{}".format(pn)] = p.grad.detach().norm()
                 disc_optimizer.step()
                 gradient_penalty_time += time.time() - grad_start
 
@@ -315,6 +316,7 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
             for pn, p in model.generator.named_parameters():
                 if p.requires_grad:
                     losses["norm/gen/{}".format(pn)] = p.detach().norm()
+                    losses["norm/gen/grad/{}".format(pn)] = p.grad.detach().norm()
             gen_optimizer.step()
 
             backward_prop_time += time.time() - temp_time

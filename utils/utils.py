@@ -12,7 +12,7 @@ from nilearn import plotting
 import nibabel
 from nilearn.input_data import NiftiMasker
 import nilearn.masking as masking
-from nilearn.image import load_img, resample_img
+from nilearn.image import load_img, resample_img, math_img
 import torch
 from torch.utils.data import SubsetRandomSampler
 from collections import defaultdict
@@ -59,14 +59,17 @@ def save_images(tensor_list, title_list, filename, mu_=0.0, std_=1.0, figsize=(1
     for idx, tensor in enumerate(tensor_list):
         ax = plt.subplot(nrows, ncols, indexes[idx] if indexes else idx)
         plotting.plot_stat_map(
-            nibabel.Nifti1Image(
-                mu_ + std_ * tensor.detach().cpu().numpy().squeeze(), constants.brain_mask.affine
+            math_img("img1 * img2",
+                img1=nibabel.Nifti1Image(
+                    mu_ + std_ * tensor.detach().cpu().numpy().squeeze(), constants.brain_mask.affine
+                ),
+                img2=constants.brain_mask
             ),
             axes=ax,
             title=title_list[idx],
             cut_coords=cut_coords,
             # bg_img=downsampled_template,
-            threshold='auto',
+            threshold=False,
             black_bg=False,
         )
     if show_instead_of_save:
