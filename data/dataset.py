@@ -26,6 +26,7 @@ from data.constants import (
     brain_mask,
     dataframe_csv_file,
     statistics_pkl,
+    brain_mask_numpy,
 )
 from utils.utils import infinite_iter, multi_key_infinite_iter
 warnings.simplefilter("ignore")
@@ -50,7 +51,9 @@ class Dataset(TorchDataset):
         contrast = self.meta['c2i'][loc.contrast]
         img = nibabel.load(image_file)
         this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
-        return (this_data - self.mu) / self.std, study, task, contrast
+        this_data = (this_data - self.mu) / (1e-4 + self.std)
+        this_data = brain_mask_numpy * (-1.0 + 2.0 * (this_data - this_data.min()) / (this_data.max() - this_data.min()))  # [-1 -> 1]
+        return this_data, study, task, contrast
 
 
 def get_datasets(studies, subject_split, debug):

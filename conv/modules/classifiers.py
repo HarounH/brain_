@@ -30,7 +30,7 @@ from .blocks import (
 
 
 class ClassifierHierarchical0(nn.Module):
-    def __init__(self, args, loadable_state_dict=None, z_size=128, content_channels=16, dropout_rate=0.5):
+    def __init__(self, args, loadable_state_dict=None, z_size=128, dropout_rate=0.5):
         super(ClassifierHierarchical0, self).__init__()
         self.args = args
         meta = self.args.meta
@@ -63,7 +63,7 @@ class ClassifierHierarchical0(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Dropout(dropout_rate),
         )  # 1, 2, 1
-
+        self.study_conv = nn.Sequential()
 
         self.contrast_fc = nn.Sequential(
             nn.Linear(3 * z_size * 1 * 2 * 1, len(meta['c2i'])),
@@ -74,7 +74,6 @@ class ClassifierHierarchical0(nn.Module):
         self.study_fc = nn.Sequential(
             nn.Linear(1 * z_size * 1 * 2 * 1, len(meta['s2i'])),
         )
-
         if loadable_state_dict:
             self.load_state_dict(loadable_state_dict)
 
@@ -96,7 +95,7 @@ class ClassifierHierarchical0(nn.Module):
         ti2ci_mask.requires_grad = False  # 1, 3, *(target_shape)
         self.register_buffer('ti2ci_mask', ti2ci_mask)
 
-    def forward(self, x):
+    def forward(self, x, predict_s=None, svec=None, tvec=None):
         cur_z = x.unsqueeze(1)
         downsample = getattr(self, 'downsample{}'.format(0))
         cur_z = downsample(cur_z)
@@ -117,8 +116,8 @@ class ClassifierHierarchical0(nn.Module):
             cur_z = getattr(self, 'residual{}'.format(2))(cur_z)
         if hasattr(self, 'activation{}'.format(2)):
             cur_z = getattr(self, 'activation{}'.format(2))(cur_z)
-        c_z = cur_z
 
+        c_z = cur_z
         downsample = getattr(self, 'downsample{}'.format(3))
         cur_z = downsample(cur_z)
         if hasattr(self, 'residual{}'.format(3)):

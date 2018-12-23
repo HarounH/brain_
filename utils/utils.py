@@ -18,6 +18,13 @@ from torch.utils.data import SubsetRandomSampler
 from collections import defaultdict
 from nilearn.datasets import load_mni152_template
 from data import constants
+import scipy.sparse as scsp
+import torch.sparse as tsp
+
+
+def scsp2tsp(mat):
+    return tsp.FloatTensor(torch.from_numpy(np.stack([mat.row, mat.col])).long(), torch.from_numpy(mat.data).float(), mat.shape)
+
 
 def periodic_integer_delta(inp, every=10, start=-1):
     return (inp % every) == ((start + every) % every)

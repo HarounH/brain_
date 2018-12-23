@@ -60,11 +60,12 @@ def get_args():
     parser.add_argument("-nb", "--nbatches", dest="nbatches", type=int, metavar='<int>', default=200000, help="Number of batches to train on")  # noqa
     parser.add_argument("-brk", "--brk", dest="to_break", type=int, metavar='<int>', default=-1, help="Number of batches after which to breakpoint")  # noqa
     parser.add_argument("-b", "--batch_size", dest="batch_size", type=int, metavar='<int>', default=32, help="Batch size (default=32)")  # noqa
-    parser.add_argument("-di", "--disc_iters", dest="disc_iters", type=int, metavar='<int>', default=1, help="Number of discriminator per generator update")  # noqa
-    parser.add_argument("-disc_lr", "--disc_learning_rate", dest="disc_lr", type=float, metavar='<float>', default=0.0002, help='Learning rate')  # noqa
-    parser.add_argument("-gen_lr", "--gen_learning_rate", dest="gen_lr", type=float, metavar='<float>', default=0.0002, help='Learning rate')  # noqa
+    parser.add_argument("-gi", "--gen_iters", dest="gen_iters", type=int, metavar='<int>', default=1, help="Number of generator iters per batch")  # noqa
+    parser.add_argument("-di", "--disc_iters", dest="disc_iters", type=int, metavar='<int>', default=1, help="Number of discriminator per batch")  # noqa
+    parser.add_argument("-disc_lr", "--disc_learning_rate", dest="disc_lr", type=float, metavar='<float>', default=0.0001, help='Learning rate')  # noqa
+    parser.add_argument("-gen_lr", "--gen_learning_rate", dest="gen_lr", type=float, metavar='<float>', default=0.0001, help='Learning rate')  # noqa
     parser.add_argument("--gp_lambda", dest="gp_lambda", default=10.0, type=float, help="gradient penalty multiplier")
-    parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=1e-4, help='Weight decay')  # noqa
+    parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=0.0, help='Weight decay')  # noqa
     parser.add_argument("-clfw", "--classification_weight", dest="clfw", default=1.0, type=float, help="Weight to use on classification loss. Tweak to avoid class dependency")
 
     parser.add_argument('-ve', '--validate_every', type=int, default=100, help='How often to validate')  # noqa
@@ -124,13 +125,13 @@ def test(args, datasets, loaders, model, writer, batch_idx=-1, prefix="test", sa
                 z = torch.randn(batch_size, model.LATENT_SIZE).float().to(args.device)
                 gz = model.generator(z, svec, tvec, cvec)
                 xs = [
-                    ('real/', x),
-                    ('fake/', gz),
+                    ('real-', x),
+                    ('fake-', gz),
                 ]
                 for tag, xin in xs:
                     rf, spred, tpred, cpred = model.discriminator(xin, predict_s=r_labels, svec=svec, tvec=tvec)
-                    losses[tag + "dreal"].append(torch.log(rf).mean().item())
-                    losses[tag + "dfake"].append(torch.log(1 - rf).mean().item())
+                    losses[tag + "dreal"].append(torch.log(1e-8 + rf).mean().item())
+                    losses[tag + "dfake"].append(torch.log(1e-8 + 1 - rf).mean().item())
                     losses[tag + "study acc"].append((torch.argmax(spred.detach(), dim=1) == svec).float().mean().item())
                     losses[tag + "study ce"].append(F.cross_entropy(spred, svec).item())
                     losses[tag + "task acc"].append((torch.argmax(tpred.detach(), dim=1) == tvec).float().mean().item())
@@ -138,8 +139,8 @@ def test(args, datasets, loaders, model, writer, batch_idx=-1, prefix="test", sa
                     losses[tag + "contrast acc"].append((torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item())
                     losses[tag + "contrast ce"].append(F.cross_entropy(cpred, cvec).item())
 
-                losses["disc loss"] = losses["real/dreal"][-1] + losses["fake/dfake"][-1]
-                losses["gen loss"] = - losses["fake/dreal"][-1]
+                losses["disc loss"] = losses["real-dreal"][-1] + losses["fake-dfake"][-1]
+                losses["gen loss"] = - losses["fake-dreal"][-1]
 
                 # Save gz
                 if not_dumped_images and (bidx % 10 == save_on_batch):
@@ -158,7 +159,7 @@ def test(args, datasets, loaders, model, writer, batch_idx=-1, prefix="test", sa
                         )
                 # Log stuff
             writer.add_scalars(
-                (prefix + "/" if prefix != "" else "") + s,
+                (prefix + "-" if prefix != "" else "") + s,
                 {k: np.mean(v) for k, v in losses.items()},
                 batch_idx
             )
@@ -202,6 +203,7 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
             break
         batch_items = list(batch.items())
         random.shuffle(batch_items)
+        batch_losses = {}
         for study, (x, svec, tvec, cvec) in batch_items:
             losses = {}
             if ((batch_idx == to_break)):
@@ -227,7 +229,7 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
                 disc_optimizer.zero_grad()
                 rf, spred, tpred, cpred = model.discriminator(x, predict_s=r_labels, svec=svec, tvec=tvec)
                 # pdb.set_trace()
-                L_gan = -torch.log(rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), r_labels)
+                L_gan = -torch.log(1e-8 + rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), r_labels)
                 L_clf_s = F.cross_entropy(spred, svec)
                 L_clf_t = F.cross_entropy(tpred, tvec)
                 L_clf_c = F.cross_entropy(cpred, cvec)
@@ -242,24 +244,24 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
                 disc_real_loss.backward()
 
                 backward_prop_time += time.time() - temp_time
-                losses["real/" + "dreal"] = L_gan.item()
-                losses["real/" + "s acc"] = acc_s
-                losses["real/" + "s ce"] = L_clf_s.item()
-                losses["real/" + "t acc"] = acc_t
-                losses["real/" + "t ce"] = L_clf_t.item()
-                losses["real/" + "c acc"] = acc_c
-                losses["real/" + "c ce"] = L_clf_c.item()
+                losses["real-" + "dreal"] = L_gan.item()
+                losses["real-" + "s acc"] = acc_s
+                losses["real-" + "s ce"] = L_clf_s.item()
+                losses["real-" + "t acc"] = acc_t
+                losses["real-" + "t ce"] = L_clf_t.item()
+                losses["real-" + "c acc"] = acc_c
+                losses["real-" + "c ce"] = L_clf_c.item()
 
                 z = torch.randn(batch_size, model.LATENT_SIZE, device=args.device, dtype=torch.float)
                 Gz = model.generator(z, svec, tvec, cvec)
                 rf, spred, tpred, cpred = model.discriminator(x)  # , predict_s=r_labels, svec=svec, tvec=tvec)
                 # pdb.set_trace()
-                L_gan = -torch.log(1 - rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), f_labels)
+                L_gan = -torch.log(1e-8 + 1 - rf).mean()  # F.binary_cross_entropy(rf.view(-1, 1), f_labels)
                 # L_clf_s = F.cross_entropy(spred, svec)
                 # L_clf_t = F.cross_entropy(tpred, tvec)
                 # L_clf_c = F.cross_entropy(cpred, cvec)
                 disc_fake_loss = L_gan  # + L_clf_s + L_clf_t + L_clf_c
-                losses["fake/" + "dfake"] = L_gan.item()
+                losses["fake-" + "dfake"] = L_gan.item()
 
                 losses["disc loss no gp"] = disc_real_loss.item() + disc_fake_loss.item()
 
@@ -274,60 +276,68 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
                 gradient_penalty = model.gradient_penalty(model.discriminator, x, Gz)
                 losses["gradient_penalty"] = gradient_penalty.item()
                 gradient_penalty.backward()
+                gradient_penalty_time += time.time() - grad_start
                 # Compute gradient norms
                 for pn, p in model.discriminator.named_parameters():
-                    if p.requires_grad:
-                        losses["norm/disc/{}".format(pn)] = p.detach().norm()
-                        losses["norm/disc/grad{}".format(pn)] = p.grad.detach().norm()
+                    if p.requires_grad and not("bias" in pn):
+                        losses["norm-disc-{}".format(pn)] = p.detach().norm().item()
+                        losses["norm-disc-grad-{}".format(pn)] = p.grad.detach().norm().item()
+                        # if torch.isnan(p.grad).any():
+                        #     pdb.set_trace()
                 disc_optimizer.step()
-                gradient_penalty_time += time.time() - grad_start
 
-            ####################
-            # GENERATOR
-            ####################
-            gen_optimizer.zero_grad()
-            temp_time = time.time()
-            z = torch.randn(batch_size, model.LATENT_SIZE, device=args.device, dtype=torch.float)
-            Gz = model.generator(z, svec, tvec, cvec)
+            for i in range(args.gen_iters):
+                ####################
+                # GENERATOR
+                ####################
+                gen_optimizer.zero_grad()
+                temp_time = time.time()
+                z = torch.randn(batch_size, model.LATENT_SIZE, device=args.device, dtype=torch.float)
+                Gz = model.generator(z, svec, tvec, cvec)
 
-            rf, spred, tpred, cpred = model.discriminator(Gz, predict_s=r_labels, svec=svec, tvec=tvec)
-            L_gan = - torch.log(rf).mean()  # Non saturating version of minimax loss
-            L_clf_s = F.cross_entropy(spred, svec)
-            L_clf_t = F.cross_entropy(tpred, tvec)
-            L_clf_c = F.cross_entropy(cpred, cvec)
-            gen_loss = L_gan + args.clfw * (L_clf_s + L_clf_t + L_clf_c)
-            acc_s = (torch.argmax(spred.detach(), dim=1) == svec).float().mean().item()
-            acc_t = (torch.argmax(tpred.detach(), dim=1) == tvec).float().mean().item()
-            acc_c = (torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item()
+                rf, spred, tpred, cpred = model.discriminator(Gz, predict_s=r_labels, svec=svec, tvec=tvec)
+                L_gan = - torch.log(1e-8 + rf).mean()  # Non saturating version of minimax loss
+                L_clf_s = F.cross_entropy(spred, svec)
+                L_clf_t = F.cross_entropy(tpred, tvec)
+                L_clf_c = F.cross_entropy(cpred, cvec)
+                gen_loss = L_gan + args.clfw * (L_clf_s + L_clf_t + L_clf_c)
+                acc_s = (torch.argmax(spred.detach(), dim=1) == svec).float().mean().item()
+                acc_t = (torch.argmax(tpred.detach(), dim=1) == tvec).float().mean().item()
+                acc_c = (torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item()
 
-            losses["fake/" + "dreal"] = L_gan.item()
-            losses["fake/" + "s acc"] = acc_s
-            losses["fake/" + "s ce"] = L_clf_s.item()
-            losses["fake/" + "t acc"] = acc_t
-            losses["fake/" + "t ce"] = L_clf_t.item()
-            losses["fake/" + "c acc"] = acc_c
-            losses["fake/" + "c ce"] = L_clf_c.item()
-            losses["gen loss"] = gen_loss.item()
+                losses["fake-" + "dreal"] = L_gan.item()
+                losses["fake-" + "s acc"] = acc_s
+                losses["fake-" + "s ce"] = L_clf_s.item()
+                losses["fake-" + "t acc"] = acc_t
+                losses["fake-" + "t ce"] = L_clf_t.item()
+                losses["fake-" + "c acc"] = acc_c
+                losses["fake-" + "c ce"] = L_clf_c.item()
+                losses["gen loss"] = gen_loss.item()
 
-            forward_prop_time += time.time() - temp_time
-            temp_time = time.time()
+                forward_prop_time += time.time() - temp_time
+                temp_time = time.time()
 
-            gen_loss.backward()
-            for pn, p in model.generator.named_parameters():
-                if p.requires_grad:
-                    losses["norm/gen/{}".format(pn)] = p.detach().norm()
-                    losses["norm/gen/grad/{}".format(pn)] = p.grad.detach().norm()
-            gen_optimizer.step()
+                gen_loss.backward()
+                for pn, p in model.generator.named_parameters():
+                    if p.requires_grad and not("bias" in pn):
+                        losses["norm-gen-{}".format(pn)] = p.detach().norm()
+                        losses["norm-gen-grad-{}".format(pn)] = p.grad.detach().norm()
+                        # if torch.isnan(p.grad).any():
+                        #     pdb.set_trace()
+                gen_optimizer.step()
 
-            backward_prop_time += time.time() - temp_time
-            temp_time = time.time()
-            writer.add_scalars(
-                (prefix + "/" if prefix != "" else "") + study,
-                {k: v for k, v in losses.items()},
-                batch_idx
-            )
-            writing_time += time.time() - temp_time
-            # pdb.set_trace()
+                backward_prop_time += time.time() - temp_time
+
+            for k, v in losses.items():
+                batch_losses[study + "-" + k] = v
+        temp_time = time.time()
+        writer.add_scalars(
+            (prefix),
+            {k: v for k, v in batch_losses.items()},
+            batch_idx
+        )
+        writing_time += time.time() - temp_time
+        # pdb.set_trace()
         print("[{} / {}]: writing={:.2f} cuda={:.2f} forw={:.2f} back={:.2f} gp={:.2f} total={:.2f}".format(batch_idx, args.nbatches, writing_time, cuda_transfer_time, forward_prop_time, backward_prop_time, gradient_penalty_time, time.time() - start))
         ######
         # Val

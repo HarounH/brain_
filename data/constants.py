@@ -1,3 +1,4 @@
+import numpy as np
 from nilearn.image import load_img, resample_img, crop_img, threshold_img, math_img
 import nilearn.datasets
 import nibabel
@@ -21,7 +22,8 @@ for scale in basc_scales:
 
 bm = nilearn.datasets.load_mni152_brain_mask()
 brain_mask = resample_img(bm, target_shape=basc_images[7].shape, target_affine=basc_images[7].affine, interpolation='nearest')
-brain_mask_tensor = torch.tensor(brain_mask.get_data()).float()
+brain_mask_numpy = brain_mask.get_data().astype(np.float32)
+brain_mask_tensor = torch.from_numpy(brain_mask_numpy)
 
 nv_ids = {
     'archi': 4339,

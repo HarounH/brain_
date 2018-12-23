@@ -28,7 +28,7 @@ if target_location[-1] != "/":
     target_location = target_location + "/"
 os.makedirs(target_location, exist_ok=True)
 os.makedirs(os.path.join(target_location, "original"), exist_ok=True)
-os.makedirs(os.path.join(target_location, "downsampled"), exist_ok=True)
+os.makedirs(os.path.join(target_location, "downsampled_at_10"), exist_ok=True)
 
 
 def file_namer(s="", t="", k=""):
@@ -57,7 +57,7 @@ def fetch_subject(param_pair):
         start = time.time()
         nimg = nibabel.load(download_path)
         data = nimg.get_data()
-        for t in range(0, nimg.shape[-1], 60):
+        for t in range(0, nimg.shape[-1], 10):
             img = math_img(
                 "img1 * img2",
                 img1=resample_to_img(
@@ -68,7 +68,7 @@ def fetch_subject(param_pair):
                 ),
                 img2=brain_mask,
             )
-            downsampled_path = os.path.join(target_location, "downsampled", file_namer(s=subject, k=k, t=t))
+            downsampled_path = os.path.join(target_location, "downsampled_at_10", file_namer(s=subject, k=k, t=t))
             nibabel.save(img, downsampled_path)
         print("Downsampling [{}, {}] took {}s".format(i, k, time.time() - start))
         os.remove(download_path)
