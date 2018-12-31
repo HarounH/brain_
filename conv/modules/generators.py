@@ -130,7 +130,7 @@ class GeneratorHierarchical0(nn.Module):
 
 class GeneratorHierarchical1(nn.Module):
     def __init__(self, args, mask=None, loadable_state_dict=None, z_size=128, content_channels=16, dropout_rate=0.5):
-        super(GeneratorHierarchical0, self).__init__()
+        super(GeneratorHierarchical1, self).__init__()
         self.args = args
         meta = self.args.meta
         self.z_size = z_size
@@ -176,15 +176,15 @@ class GeneratorHierarchical1(nn.Module):
         # (1, 2, 1) - k343s2p010 - (3, 4, 3) - k4s2p1 - (6, 8, 6) - k343s2p010 - (13, 16, 13) - k4s2p1 - (26, 32, 26) - k344s2p011 - 53, 64, 52
         # Now, to convolve.
         self.upsample0 = CCT3D((1, 2, 1), z_size + content_channels, z_size // 2, (3, 4, 3), stride=2, padding=(0, 1, 0), use_spectral_norm=False)
-        self.residual0 = ResidualBlock((3, 4, 3), z_size // 2, [3], use_spectral_norm=False)
+        # self.residual0 = ResidualBlock((3, 4, 3), z_size // 2, [3], use_spectral_norm=False)
         self.activation0 = nn.Sequential(nn.LeakyReLU(0.2), nn.BatchNorm3d(z_size // 2))
 
         self.upsample1 = CCT3D((3, 4, 3), z_size // 2 + content_channels, z_size // 4, (4, 4, 4), stride=2, padding=(1, 1, 1), use_spectral_norm=False)
-        self.residual1 = ResidualBlock((6, 8, 6), z_size // 4, [3], use_spectral_norm=False)
+        # self.residual1 = ResidualBlock((6, 8, 6), z_size // 4, [3], use_spectral_norm=False)
         self.activation1 = nn.Sequential(nn.LeakyReLU(0.2), nn.BatchNorm3d(z_size // 4))
 
         self.upsample2 = CCT3D((6, 8, 6), z_size // 4 + content_channels, z_size // 8, (3, 4, 3), stride=2, padding=(0, 1, 0), use_spectral_norm=False)
-        self.residual2 = ResidualBlock((13, 16, 13), z_size // 16, [3], use_spectral_norm=False)
+        # self.residual2 = ResidualBlock((13, 16, 13), z_size // 8, [3], use_spectral_norm=False)
         self.activation2 = nn.Sequential(nn.LeakyReLU(0.2), nn.BatchNorm3d(z_size // 8))
 
         self.upsample3 = CCT3D((13, 16, 13), z_size // 8 + content_channels, z_size // 16, (4, 4, 4), stride=2, padding=(1, 1, 1), use_spectral_norm=False)
@@ -192,6 +192,7 @@ class GeneratorHierarchical1(nn.Module):
         self.activation3 = nn.Sequential(nn.LeakyReLU(0.2), nn.BatchNorm3d(z_size // 16))
 
         self.upsample4 = CCT3D((26, 32, 26), z_size // 16 + content_channels, 1, (3, 4, 4), stride=2, padding=(0, 1, 1), use_spectral_norm=False)
+        self.residual4 = nn.Conv3d(1, 1, 3, stride=1, padding=1)  # Not a residual...
         self.activation4 = nn.Sequential(nn.Tanh())
 
         if loadable_state_dict:

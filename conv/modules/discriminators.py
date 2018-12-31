@@ -172,11 +172,13 @@ class DiscriminatorHierarchical1(nn.Module):
         meta = self.args.meta
 
         # 53, 64, 52
+        self.smooth = nn.Sequential()  # spectral_norm(nn.Conv3d(1, 1, 3, stride=1, padding=1))
         self.downsample0 = CC3D((53, 64, 52), 1, z_size // 16, kernel=4, stride=2, padding=1, use_spectral_norm=True)
-        self.residual0 = ResidualBlock((26, 32, 26), z_size // 16, [3], use_spectral_norm=True)
+        # self.residual0 = ResidualBlock((26, 32, 26), z_size // 16, [3], use_spectral_norm=True)
         self.activation0 = nn.Sequential(nn.LeakyReLU(0.2))
 
         self.downsample1 = CC3D((26, 32, 26), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_spectral_norm=True)
+        # self.residual1 = ResidualBlock((13, 16, 13), z_size // 8, [3], use_spectral_norm=True)
         self.activation1 = nn.Sequential(nn.LeakyReLU(0.2))
 
         self.downsample2 = CC3D((13, 16, 13), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_spectral_norm=True)
@@ -184,6 +186,7 @@ class DiscriminatorHierarchical1(nn.Module):
         self.activation2 = nn.Sequential(nn.LeakyReLU(0.2))
         # contrast
         self.downsample3 = CC3D((6, 8, 6), z_size // 4, z_size // 2, kernel=4, stride=2, padding=1, use_spectral_norm=True)
+        self.residual3 = ResidualBlock((3, 4, 3), z_size // 2, [3], use_spectral_norm=True)
         self.activation3 = nn.Sequential(nn.LeakyReLU(0.2))
         # task
         self.downsample4 = CC3D((3, 4, 3), z_size // 2, z_size, kernel=4, stride=2, padding=1, use_spectral_norm=True)
@@ -241,7 +244,7 @@ class DiscriminatorHierarchical1(nn.Module):
         self.register_buffer('ti2ci_mask', ti2ci_mask)
 
     def forward(self, x, predict_s=None, svec=None, tvec=None):
-        cur_z = x.unsqueeze(1)
+        cur_z = self.smooth(x.unsqueeze(1))
         downsample = getattr(self, 'downsample{}'.format(0))
         cur_z = downsample(cur_z)
         if hasattr(self, 'residual{}'.format(0)):

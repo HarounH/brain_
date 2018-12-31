@@ -1,8 +1,11 @@
+import pickle
 import numpy as np
 from nilearn.image import load_img, resample_img, crop_img, threshold_img, math_img
 import nilearn.datasets
 import nibabel
 import torch
+import data.ward_tree as ward_tree
+
 
 IMAGE_SHAPE = [53, 64, 52]
 
@@ -10,6 +13,11 @@ dataframe_csv_file = "/data/neurovault/resampled_dataframe.csv"
 statistics_pkl = "/data/neurovault/stats.pkl"
 ward_parcellation_image = "/data/hcp/ward_parcellation.nii.gz"
 agglomerative_file_name = "/data/hcp/agglomerative_file_name.pkl"
+
+
+def get_wtree(filename=agglomerative_file_name):
+    return ward_tree.WardTree(filename)
+
 
 hcp_data_dir = "/data/hcp/downsampled/"
 
@@ -24,6 +32,8 @@ bm = nilearn.datasets.load_mni152_brain_mask()
 brain_mask = resample_img(bm, target_shape=basc_images[7].shape, target_affine=basc_images[7].affine, interpolation='nearest')
 brain_mask_numpy = brain_mask.get_data().astype(np.float32)
 brain_mask_tensor = torch.from_numpy(brain_mask_numpy)
+
+masked_nnz = brain_mask_numpy.sum()
 
 nv_ids = {
     'archi': 4339,

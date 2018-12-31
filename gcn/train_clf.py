@@ -23,19 +23,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from tensorboardX import SummaryWriter
-from conv.modules import (
+from gcn.modules import (
     classifiers
 )
+
 import utils.utils as utils
 from data import (
     dataset,
     constants
 )
 
+
 def get_args():
     parser = argparse.ArgumentParser()
     # dataset
-    parser.add_argument("names", type=str, nargs='+', choices=constants.nv_ids.keys(), help="datasets to use")  # noqa
+    parser.add_argument("name", type=str, choices=constants.nv_ids.keys(), help="dataset to use")  # noqa
     # misc
     parser.add_argument("-ns", "--subject_split", dest="subject_split", action="store_true", default=False, help="If set, train/test split is not by subject.")
     parser.add_argument("--seed", dest="seed", type=int, metavar='<int>', default=1337, help="Random seed (default=1337)")  # noqa
@@ -46,30 +48,34 @@ def get_args():
     # compute
     parser.add_argument("--mode", choices=['train', 'test'], default='train')
     parser.add_argument("-chk", "--checkpoint", dest="checkpoint", default="", help="File where checkpoint is saved")
+
     # outputs
-    parser.add_argument("--base_output", dest="base_output", default="conv/outputs/shacgan/", help="Directory which will have folders per run")  # noqa
+    parser.add_argument("--base_output", dest="base_output", default="gcn/outputs/clf/", help="Directory which will have folders per run")  # noqa
     parser.add_argument("-r", "--run", dest='run_code', type=str, default='', help='Name this run. It will be part of file names for convenience')  # noqa
     parser.add_argument("--tensorboard_dir", dest="tensorboard_dir", type=str, default="tensorboard", help="Subdirectory to save logs using tensorboard")  # noqa
     parser.add_argument("--model_dir", dest="model_dir", type=str, default="models", help="Subdirectory to save models")  # noqa
 
     # training
-    parser.add_argument("-nb", "--nbatches", dest="nbatches", type=int, metavar='<int>', default=200000, help="Number of batches to train on")  # noqa
+    # parser.add_argument("-nb", "--nbatches", dest="nbatches", type=int, metavar='<int>', default=200000, help="Number of batches to train on")  # noqa
+    parser.add_argument("-e", "--epochs", dest="epochs", type=int, default=200, help="Number of epochs to run this for")
     parser.add_argument("-brk", "--brk", dest="to_break", type=int, metavar='<int>', default=-1, help="Number of batches after which to breakpoint")  # noqa
     parser.add_argument("-b", "--batch_size", dest="batch_size", type=int, metavar='<int>', default=32, help="Batch size (default=32)")  # noqa
-    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.001, help='Learning rate')  # noqa
+    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.0001, help='Learning rate')  # noqa
     parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=0.0, help='Weight decay')  # noqa
 
-    parser.add_argument("-clfc", "--classification_weight_contrast", dest="clfc", default=2.0, type=float, help="Weight to use on classification loss of contrast. Tweak to avoid class dependency")
-    parser.add_argument("-clft", "--classification_weight_task", dest="clft", default=1.0, type=float, help="Weight to use on classification loss of task. Tweak to avoid class dependency")
-    parser.add_argument("-clfs", "--classification_weight_study", dest="clfs", default=0.5, type=float, help="Weight to use on classification loss of study. Tweak to avoid class dependency")
+    parser.add_argument("-clfc", "--classification_weight_contrast", dest="clfc", default=1.0, type=float, help="Weight to use on classification loss of contrast. Tweak to avoid class dependency")
+    parser.add_argument("-clft", "--classification_weight_task", dest="clft", default=0, type=float, help="Weight to use on classification loss of task. Tweak to avoid class dependency")
+    parser.add_argument("-clfs", "--classification_weight_study", dest="clfs", default=0, type=float, help="Weight to use on classification loss of study. Tweak to avoid class dependency")
 
-    parser.add_argument('-ve', '--validate_every', type=int, default=100, help='How often to validate')  # noqa
-    parser.add_argument('-se', '--save_every', type=int, default=1000, help='How often to save during training')  # noqa
+    parser.add_argument('-ve', '--validate_every', type=int, default=5, help='How often to validate')  # noqa
+    parser.add_argument('-se', '--save_every', type=int, default=10, help='How often to save during training')  # noqa
     # parser.add_argument('-pe', '--print_every', type=int, default=20, help='How often to print losses during training')  # noqa
 
-    parser.add_argument('-ct', "--classifier_type", type=str, default='0', choices=classifiers.versions.keys(), help="What classifier version to use")
+    parser.add_argument('-ct', "--classifier_type", type=str, default='fgl0', choices=classifiers.versions.keys(), help="What classifier version to use")
+    parser.add_argument('-nr', '--nregions', type=int, default=8, help='How many regions to consider if classifier type is r0')  # noqa
     args = parser.parse_args()
 
+    args.names = args.name
     args.cuda = args.cuda and torch.cuda.is_available()
     args.device = 'cuda' if args.cuda else 'cpu'
     args.dataparallel = args.dataparallel and args.cuda
@@ -78,6 +84,7 @@ def get_args():
     torch.cuda.manual_seed_all(args.seed)
     # Get run_code
     # Check if base_output exists
+    args.base_output = os.path.join(args.base_output, args.classifier_type)
     os.makedirs(args.base_output, exist_ok=True)
     if len(args.run_code) == 0:
         # Generate a run code by counting number of directories in oututs
@@ -103,37 +110,36 @@ def test(args, datasets, loaders, model, writer, batch_idx=-1, prefix="test", sa
         for s, loader in loaders.items():
             not_dumped_images = True
             losses = defaultdict(lambda: [])
-            for bidx, (x, svec, tvec, cvec) in enumerate(loader):
+            for bidx, (x, _, _, cvec) in enumerate(loader):
                 batch_size = x.shape[0]
 
                 if args.cuda:
                     x = x.cuda()
-                    svec = svec.cuda()
-                    tvec = tvec.cuda()
+                    # svec = svec.cuda()
+                    # tvec = tvec.cuda()
                     cvec = cvec.cuda()
 
-                spred, tpred, cpred = model.discriminator(xin, predict_s=r_labels, svec=svec, tvec=tvec)
-                losses[tag + "study acc"].append((torch.argmax(spred.detach(), dim=1) == svec).float().mean().item())
-                losses[tag + "study ce"].append(F.cross_entropy(spred, svec).item())
-                losses[tag + "task acc"].append((torch.argmax(tpred.detach(), dim=1) == tvec).float().mean().item())
-                losses[tag + "task ce"].append(F.cross_entropy(tpred, tvec).item())
-                losses[tag + "contrast acc"].append((torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item())
-                losses[tag + "contrast ce"].append(F.cross_entropy(cpred, cvec).item())
+                cpred = model(x)
+                losses["contrast acc"].append((torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item())
+                losses["contrast ce"].append(F.cross_entropy(cpred, cvec).item())
+        for k, v in losses.items():
+            print("[{}-{} {}][{:.2f}]{} = {}".format(prefix, s, batch_idx, time.time() - start, k, np.mean(v)))
 
-                # Log stuff
-            writer.add_scalars(
-                (prefix + "-" if prefix != "" else "") + s,
-                {k: np.mean(v) for k, v in losses.items()},
-                batch_idx
-            )
+        writer.add_scalars(
+            prefix,
+            {s + "-" + k: np.mean(v) for k, v in losses.items()},
+            batch_idx
+        )
+
     model = model.train()
-    print("{}testing took {}s".format(prefix + " " if prefix != "" else "", time.time() - start))
 
 
-def train(args, train_datasets, train_loaders, test_datasets, test_loaders, model, writer, prefix="train", checkpoint=None):
+def train_single_dataset(args, train_datasets, train_loaders, test_datasets, test_loaders, model, writer, prefix="train", checkpoint=None):
+    assert(len(train_datasets) == 1)
+    study = list(train_datasets.keys())[0]
     params = list(model.parameters())
     optimizer = optim.Adam(
-        gen_params,
+        params,
         lr=args.lr,
         betas=(0.5, 0.9),
         weight_decay=args.weight_decay
@@ -144,147 +150,118 @@ def train(args, train_datasets, train_loaders, test_datasets, test_loaders, mode
     else:
         start_batch = 0
     to_break = args.to_break
-
-    # Unused variable.
-    for batch_idx, batch in enumerate(utils.multi_key_infinite_iter(train_loaders)):
+    batch_count = -1
+    for eidx in range(args.epochs):
         start = time.time()
         forward_prop_time = 0.0
         backward_prop_time = 0.0
         gradient_penalty_time = 0.0
         cuda_transfer_time = 0.0
-        writing_time = 0.0
-        if batch_idx == args.nbatches:  # Termination condition
-            break
-        batch_items = list(batch.items())
-        random.shuffle(batch_items)
-        batch_losses = {}
-        for study, (x, svec, tvec, cvec) in batch_items:
-            losses = {}
-            if ((batch_idx == to_break)):
+        epoch_losses = defaultdict(lambda: [])
+        for (x, _, _, cvec) in train_loaders[study]:
+            batch_count += 1
+            if batch_count == to_break:
                 pdb.set_trace()
-            batch_size = x.shape[0]
-            # f_labels = torch.zeros((batch_size), dtype=torch.float, device=args.device)
 
             temp_time = time.time()
+            N = x.shape[0]
             if args.cuda:
                 x = x.cuda()
-                svec = svec.cuda()
-                tvec = tvec.cuda()
                 cvec = cvec.cuda()
-
             cuda_transfer_time += time.time() - temp_time
 
-            ####################
-            # DISCRIMINATOR
-            ####################
-            # Discriminator updates
-            spred, tpred, cpred = model(x)
-            # pdb.set_trace()
-            L_clf_s = F.cross_entropy(spred, svec)
-            L_clf_t = F.cross_entropy(tpred, tvec)
-            L_clf_c = F.cross_entropy(cpred, cvec)
-            disc_real_loss = (L_clf_s + L_clf_t + L_clf_c)
-            acc_s = (torch.argmax(spred.detach(), dim=1) == svec).float().mean().item()
-            acc_t = (torch.argmax(tpred.detach(), dim=1) == tvec).float().mean().item()
-            acc_c = (torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item()
-
-            forward_prop_time += time.time() - temp_time
             temp_time = time.time()
+            cpred = model(x)
+            loss = F.cross_entropy(cpred, cvec)
+            acc = (torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item()
+            epoch_losses["{} ce".format(study)].append(loss.item())
+            epoch_losses["{} acc".format(study)].append(acc)
+            forward_prop_time += time.time() - temp_time
 
-            losses["real-" + "s acc"] = acc_s
-            losses["real-" + "s ce"] = L_clf_s.item()
-            losses["real-" + "t acc"] = acc_t
-            losses["real-" + "t ce"] = L_clf_t.item()
-            losses["real-" + "c acc"] = acc_c
-            losses["real-" + "c ce"] = L_clf_c.item()
-            disc_real_loss.backward()
+            temp_time = time.time()
+            optimizer.zero_grad()
+            loss.backward()
             for pn, p in model.named_parameters():
                 if p.requires_grad and not("bias" in pn):
-                    losses["norm-disc-{}".format(pn)] = p.detach().norm().item()
-                    losses["norm-disc-grad-{}".format(pn)] = p.grad.detach().norm().item()
+                    epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
+                    epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
                     # if torch.isnan(p.grad).any():
                     #     pdb.set_trace()
-            disc_optimizer.step()
+            optimizer.step()
             backward_prop_time += time.time() - temp_time
-            for k, v in losses.items():
-                batch_losses[study + "-" + k] = v
-
-        temp_time = time.time()
         writer.add_scalars(
-            (prefix),
-            {k: v for k, v in batch_losses.items()},
-            batch_idx
+            prefix,
+            {k: np.mean(v) for k, v in epoch_losses.items()},
+            eidx
         )
-        writing_time += time.time() - temp_time
-        # pdb.set_trace()
-        print("[{} / {}]: writing={:.2f} cuda={:.2f} forw={:.2f} back={:.2f} total={:.2f}".format(batch_idx, args.nbatches, writing_time, cuda_transfer_time, forward_prop_time, backward_prop_time, time.time() - start))
+        print("[{}: {} / {}]: loss={:.3f} acc={:.3f} cuda={:.2f} forw={:.2f} back={:.2f} total={:.2f}".format(prefix, eidx, args.epochs, np.mean(epoch_losses["{} ce".format(study)]), np.mean(epoch_losses["{} acc".format(study)]), cuda_transfer_time, forward_prop_time, backward_prop_time, time.time() - start))
+
         ######
         # Val
         ######
-        if (utils.periodic_integer_delta(batch_idx, every=args.validate_every, start=-1) or (batch_idx == (args.nbatches - 1))):
-            test(args, test_datasets, test_loaders, model, writer, batch_idx=batch_idx, prefix="val")
+        if (utils.periodic_integer_delta(eidx, every=args.validate_every, start=-1) or (eidx == (args.epochs - 1))):
+            test(args, test_datasets, test_loaders, model, writer, batch_idx=eidx, prefix="val")
             model = model.train()
 
         ######
         # SAVE
         ######
-        if (utils.periodic_integer_delta(batch_idx, every=args.save_every, start=-1) or (batch_idx == (args.nbatches - 1))):
+        if (utils.periodic_integer_delta(eidx, every=args.save_every, start=-1) or (eidx == (args.epochs - 1))):
             checkpoint = {}
             checkpoint['base_dir'] = os.path.join(args.base_output, args.run_code)  # Makes retrieval of hyperparameters easy
-            # checkpoint['args'].meta = {k: v for k, v in args.meta.items()}
-            checkpoint['batch_idx'] = batch_idx
-            checkpoint['disc_optimizer'] = disc_optimizer.state_dict()
-            # checkpoint['enc_optimizer'] = enc_optimizer.state_dict()
-            checkpoint['gen_optimizer'] = gen_optimizer.state_dict()
+            checkpoint['eidx'] = eidx
+            checkpoint['optimizer'] = optimizer.state_dict()
             if args.dataparallel:
                 model = model.module  # Potentially slow.
                 checkpoint['model'] = model.state_dict()
                 model = nn.DataParallel(model)
             else:
                 checkpoint['model'] = model.state_dict()
-            checkpoint_path = os.path.join(args.model_dir, "model_batch{}{}".format(batch_idx, ".checkpoint"))
+            checkpoint_path = os.path.join(args.model_dir, "model_epoch{}{}".format(eidx, ".checkpoint"))
             torch.save(checkpoint, checkpoint_path)
             del checkpoint_path
             del checkpoint
 
-if __name__ == '__main__':
-    # argparse
-    args = get_args()
+    pass
 
-    # datasets
-    cpu_count = 2 * multiprocessing.cpu_count() // 3
+
+if __name__ == '__main__':
+    # get args
+    args = get_args()
+    # get datasets
+    cpu_count = multiprocessing.cpu_count() // 3
     trn, tst, meta, train_loaders, test_loaders = dataset.get_dataloaders(
         studies=args.names,
         subject_split=args.subject_split,
         debug=args.debug,
         batch_size=args.batch_size,
-        num_workers=cpu_count
+        num_workers=cpu_count,
+        masked=classifiers.masked[args.classifier_type],
     )
+    print("Datasets instantiated (lazy loading due to memory concerns)")
     args.meta = meta
-
-    # create model
+    args.wtree = constants.get_wtree()
+    print("Ward tree loaded")
     if args.checkpoint != "":
         checkpoint = torch.load(args.checkpoint)
         model_state_dict = checkpoint['model']
     else:
         checkpoint = None
         model_state_dict = None
-    model = classifiers.versions[args.classifier_type](
-        args,
-        loadable_state_dict=model_state_dict
-    )
+    # make model
+    model = classifiers.versions[args.classifier_type](args, loadable_state_dict=model_state_dict)
+
     if args.cuda:
         model = model.cuda()
     if args.dataparallel:
         model = nn.DataParallel(model)
-
+    print("Model instantiated")
     # dump argparse
     writer = SummaryWriter(log_dir=args.tensorboard_dir)
     utils.dump_everything(args)
-
-    # train/test
+    # call train/test
     if args.mode == 'train':
-        train(args, trn, train_loaders, tst, test_loaders, model, writer, prefix="train", checkpoint=checkpoint)
+        train_single_dataset(args, trn, train_loaders, tst, test_loaders, model, writer, prefix="train", checkpoint=checkpoint)
     elif args.mode == 'test':
         test(args, tst, test_loaders, model, writer)
     print("Used run_code: {}".format(args.run_code))

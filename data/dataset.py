@@ -16,6 +16,7 @@ import numpy as np
 from torch.utils.data.dataset import Dataset as TorchDataset
 import scipy.ndimage
 from nilearn.image import load_img, resample_img
+import nilearn.masking as masking
 from nilearn.datasets import load_mni152_template
 import copy
 import torch
@@ -33,13 +34,16 @@ warnings.simplefilter("ignore")
 
 
 class Dataset(TorchDataset):
-    def __init__(self, df, s, meta):
+    def __init__(self, df, s, meta, masked=False):
         self.df = df
         self.meta = meta
         self.mu = meta['s2mu'][s].astype(np.float32)  # mean_image
         self.std = meta['s2std'][s].astype(np.float32)  # std_image
         self.n = self.df.shape[0]
-
+        self.masked = masked
+        if masked:
+            self.mu = masking.apply_mask(nibabel.Nifti1Image(self.mu, brain_mask.affine), brain_mask)
+            self.std = masking.apply_mask(nibabel.Nifti1Image(self.std, brain_mask.affine), brain_mask)
     def __len__(self):
         return self.n
 
@@ -50,13 +54,18 @@ class Dataset(TorchDataset):
         task = self.meta['t2i'][loc.task]
         contrast = self.meta['c2i'][loc.contrast]
         img = nibabel.load(image_file)
-        this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
-        this_data = (this_data - self.mu) / (1e-4 + self.std)
-        this_data = brain_mask_numpy * (-1.0 + 2.0 * (this_data - this_data.min()) / (this_data.max() - this_data.min()))  # [-1 -> 1]
+        if self.masked:
+            this_data = masking.apply_mask(img, brain_mask).astype(np.float32)
+            this_data = (this_data - self.mu) / (1e-4 + self.std)
+            this_data = (-1.0 + 2.0 * (this_data - this_data.min()) / (this_data.max() - this_data.min()))  # [-1 -> 1]
+        else:
+            this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
+            this_data = (this_data - self.mu) / (1e-4 + self.std)
+            this_data = brain_mask_numpy * (-1.0 + 2.0 * (this_data - this_data.min()) / (this_data.max() - this_data.min()))  # [-1 -> 1]
         return this_data, study, task, contrast
 
 
-def get_datasets(studies, subject_split, debug):
+def get_datasets(studies, subject_split, debug, masked=False):
     df = pd.read_csv(dataframe_csv_file)
     stats = pd.read_pickle(statistics_pkl)
     stats.set_index(keys=['study'], drop=False, inplace=True)
@@ -132,16 +141,16 @@ def get_datasets(studies, subject_split, debug):
 
     training_datasets, testing_datasets = {}, {}
     for s, dfs in train_dfs_by_study.items():
-        training_datasets[s] = Dataset(pd.concat(dfs), s, meta)
+        training_datasets[s] = Dataset(pd.concat(dfs), s, meta, masked)
     for s, dfs in test_dfs_by_study.items():
-        testing_datasets[s] = Dataset(pd.concat(dfs), s, meta)
+        testing_datasets[s] = Dataset(pd.concat(dfs), s, meta, masked)
 
     return training_datasets, testing_datasets, meta
 
 
-def get_dataloaders(studies, subject_split, debug, batch_size, num_workers):
+def get_dataloaders(studies, subject_split, debug, batch_size, num_workers, masked=False):
     # Get datasets
-    training_datasets, testing_datasets, meta = get_datasets(studies, subject_split, debug)
+    training_datasets, testing_datasets, meta = get_datasets(studies, subject_split, debug, masked)
     train_loaders = {
         s: torch.utils.data.DataLoader(
             dataset,

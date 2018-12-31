@@ -408,11 +408,11 @@ class Parcellations(MultiPCA):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("n", type=int, help="Number of parcels")
-    parser.add_argument("--rfmri", default=False, action="store_true", help="parcellate HCP resting state")
+    parser.add_argument("-d", "--dir", dest="directory", default="", type=str, help="Where is it")# parser.add_argument("--rfmri", default=False, action="store_true", help="parcellate HCP resting state")
     args = parser.parse_args()
     image_list = []
-    if args.rfmri:
-        image_list = [os.path.join("/data/hcp/downsampled", x) for x in os.listdir("/data/hcp/downsampled")]
+    if args.directory != "":
+        image_list = [os.path.join(args.directory, x) for x in os.listdir(args.directory)]
     else:
         image_list = [constants.basc_bunch['scale012'], constants.basc_bunch['scale007']]
 
@@ -428,7 +428,7 @@ if __name__ == '__main__':
     # Call fit on functional dataset: single subject (less samples).
 
     ward.fit(image_list)
-
+    # pdb.set_trace()
     ward_labels_img = ward.labels_img_
     with open(constants.agglomerative_file_name, "wb") as f:
         pickle.dump(ward.agglomerative, f)

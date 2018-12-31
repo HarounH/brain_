@@ -13,22 +13,32 @@ import torch.optim as optim
 import scipy.sparse as sp
 import utils.utils as utils
 
+# x: N, n_in, in_c
+# y: N, ydim
+
 
 class FGLNet(nn.Module):
-    def __init__(self, midc, adj_list, *args, **kwargs):
+    def __init__(self, cs, As, *args, **kwargs):
         super(FGLNet, self).__init__()
-        self.net = nn.Sequential(
-            fgl.FGL(3, 784, midc, len(adj_list), adj_list),
-            nn.Tanh(),
-        )
-        self.linear = nn.Sequential(
-            nn.Linear(len(adj_list) * midc, dset.ydim[0]),
-        )  # Softmax on top
+        self.cs = cs
+        self.As = As
+        self.net = []
+        for i in range(len(As)):
+            self.net.extend([
+                fgl.FGL(cs[i], cs[i+1], As[i]),
+                nn.Tanh()
+            ])
+        self.net = nn.Sequential(*(self.net))
+        self.linear = nn.Sequential(nn.Linear(As[-1].shape[0] * cs[-1], 8), nn.Tanh())
 
     def forward(self, x):
         cur = x
-        cur = self.net(cur).view(x.shape[0], -1)
-        return self.linear(cur)
+        # with torch.autograd.profiler.profile(use_cuda=True) as prof:
+        # for module in self.net:
+        #     cur = module(cur)
+        cur = self.net(cur)
+        # print(prof)
+        return self.linear(cur.view(x.shape[0], -1))
 
 
 class Baseline(nn.Module):
@@ -38,8 +48,7 @@ class Baseline(nn.Module):
         self.net = []
         for i in range(0, len(cs) - 1):
             self.net.extend([nn.Linear(cs[i], cs[i+1]), nn.Tanh()])
-        self.net.extend([nn.Linear(cs[-1], 8)])
-        self.net = nn.Sequential(*(self.net))
+        self.net = nn.ModuleList(self.net)
 
     def forward(self, x):
         # x: N * xdim[0], xdim[1]
@@ -82,7 +91,7 @@ if __name__ == '__main__':
     parser.add_argument("model_type", choices=arch_dict.keys(), help="What model to use")
     parser.add_argument("-o", "--output", default="", type=str, help="Output file name. If not given, will create one")
 
-    parser.add_argument("-ic", "--intermediate_channel", type=int, default=1, help="Number of channels in intermediate layer")
+    parser.add_argument("-ic", "--intermediate_channel", type=int, default=8, help="Number of channels in intermediate layer")
     parser.add_argument("-ad", "--density_A", type=float, default=0.01, help="Density of intermediate connection")
 
     parser.add_argument("-sf", "--split_fraction", type=float, default=0.8, help="Fraction of data to use for training")
@@ -93,7 +102,7 @@ if __name__ == '__main__':
 
     parser.add_argument("-e", "--epochs", type=int, default=100, help="Number of epochs of training")
     parser.add_argument("-bs", "--batch_size", type=int, default=32, help="Batch size for training")
-    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.001, help='Learning rate')  # noqa
+    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.01, help='Learning rate')  # noqa
     parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=0.0, help='Weight decay')  # noqa
     parser.add_argument("-nw", "--num_workers", type=int, default=0, help="Seed for dataset generation")
     args = parser.parse_args()
@@ -122,19 +131,15 @@ if __name__ == '__main__':
         shuffle=True,
     )
     # Construct As
+
     if args.model_type == 'baseline':
         As = None
-        ks = [np.prod(dset.xdim), np.prod(dset.hdim), dset.ydim[0]]
+        ks = [np.prod(dset.xdim), 256 * args.intermediate_channel, 128, dset.ydim[0]]
     else:
-        As = []
-        base_As = train_dset.Ahx
-        for ridx in range(base_As.shape[0]):
-            As.append([ridx])
-            for cidx in range(base_As.shape[1]):
-                if base_As[ridx, cidx] > 0:
-                    As[-1].append(cidx)
-        ks = args.intermediate_channel
-
+        A0 = (sp.csr_matrix(train_dset.Ahx).tocoo()) # + sp.rand(*(train_dset.Ahx.shape), args.density_A)).tocoo()  # sp.rand(dset.xdim[0], args.intermediate_k // args.intermediate_channel, args.density_A).T  # xdim[0] * k
+        A1 = (sp.csr_matrix(train_dset.Azh).tocoo()) # + sp.rand(*(train_dset.Azh.shape), args.density_A)).tocoo()  # k * ydim[0]
+        As = [utils.scsp2tsp(A0), utils.scsp2tsp(A1)]
+        ks = [3, args.intermediate_channel, 128]
     model = arch_dict[args.model_type](ks, As)  # Pass in other things too.
 
     if args.dataparallel:

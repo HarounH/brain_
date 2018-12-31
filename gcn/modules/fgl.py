@@ -1,139 +1,219 @@
+"""
+Most of pytorch is N, C, * where C is channels.
+In this file, we create FGL which takes N, C, H -> N, C', H'
+"""
+
+
 from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import spectral_norm
 
 
 class FGL(nn.Module):
-    # Fixed Graph Linear.
-    # y = A * x * W
-    # A (n_out * n_in sparse.FloatTensor): adjacency matrix - represents the graph that linear is faithful to
-    # x: n_in * in_c FloatTensor
-    # W: in_c * out_c FloatTensor
-    # y: n_out * out_c FloatTensor
-    def __init__(self, in_c, out_c, A, use_bias=True):
+    # x: N, inc, inn
+    # y: N, outc, outn
+    def __init__(self, inc, inn, outc, outn, adj_list, bias_type=''):
+        """
+        args
+            inc (int): number of input channels
+            inn (int): Number of input positions
+            outc (int): Number of output channels
+            outn (int): Number of output positions
+            adj_list (list list int): outn lists containing lists of ints < inn
+            bias_type (str):
+                'none': no bias is used
+                'c': a bias for each channel (same over output nodes)
+                'nc': a bias for each channel and output node.
+        """
         super(FGL, self).__init__()
-        n_out, n_in = A.shape
-        self.in_c = in_c
-        self.out_c = out_c
-        self.n_in = n_in
-        self.n_out = n_out
+        assert(bias_type in ['', 'c', 'nc'])
+        self.inc = inc
+        self.outc = outc
+        self.inn = inn
+        self.outn = outn
+        self.maxD = max(len(al) for al in adj_list)
+        mask = torch.zeros(outn, self.maxD).float()  # Binary mask
+        padded_adj_list = []
+        for nidx, al in enumerate(adj_list):
+            mask[nidx, :len(al)] = 1.0
+            padded_adj_list.append(al + [0 for i in range(self.maxD - len(al))])
+        mask = mask.unsqueeze(2)
+        self.register_buffer('mask', mask)
 
-        indsA = A._indices()
-        valsA = A._values()
+        # Used as input to embedding matrix.
+        A = torch.tensor(padded_adj_list).long()
+        self.register_buffer('A', A)
 
-        # row_degrees = []
-        # _degrees = defaultdict(lambda: 0)
-        # for i in inds[0, :]:
-        #     _degrees[i] += 1
-        # row_degrees.extend([(k, v) for k, v in _degrees.items()])
-        # indsD = torch.tensor([[k, k] for (k, _) in row_degrees])
-        # valsD = torch.tensor([v for (_, v) in row_degrees]).pow(-0.5)  # pow(-0.5) is safe since valsD > 0
-
-        self.register_buffer('indsA', indsA)
-        self.register_buffer('valsA', valsA)
-        # self.register_buffer('indsD', indsD)
-        # self.register_buffer('valsD', valsD)
-
-        # Unfortunately, we don't have 2D sparse * 3D dense yet.
-        # Hence, our best bet is to create a block sparse A, and multiply it with the
-        # 2D version of input x (obtained by a simple x.view(-1, in_c)) or x.view(-1, out_c)
-        self.blockA = A
-        # self.blockD = torch.sparse.FloatTensor(indsD.t(), valsD, size=self.blockA.shape)
-
-        self.weight = nn.Parameter(torch.randn(in_c, out_c, dtype=torch.float) / n_out)
-        if use_bias:  # It's a parameter in one case.
-            self.bias = nn.Parameter(torch.randn(n_out, out_c, dtype=torch.float) / n_out)
-        else:
-            bias = torch.zeros(n_out, out_c).float()
+        # parameters
+        self.weight = nn.Parameter(0.2 * torch.randn(inc, outc).float())
+        if bias_type == '':
+            bias = torch.zeros(outc, 1).float()
             self.register_buffer('bias', bias)
-
-    def get_AD_(self, x):
-        if (self.blockA.shape[1] != (x.shape[0] * self.n_in)):
-            # Repeat A to match the size of x essentially.
-            n_repeats = x.shape[0]
-            blockA_inds = torch.cat([self.indsA + torch.tensor([[i * self.n_out], [i * self.n_in]]).to(self.indsA.device) for i in range(n_repeats)], dim=1)
-            # blockD_inds = torch.cat([self.indsD + torch.tensor([[i], [i]]).to(self.indsD.device) for i in range(n_repeats)], dim=1)
-            # Not ideal, but we can't use tensor.expand since its actual implementation doesn't favor us
-            blockA_vals = self.valsA.repeat(n_repeats)
-            # blockD_vals = self.valsD.repeat(n_repeats)
-            blockA = torch.sparse.FloatTensor(blockA_inds, blockA_vals, size=(n_repeats * self.n_out, n_repeats * self.n_in))
-            # self.blockD = torch.sparse.FloatTensor(blockD_inds, blockD_vals)
+        elif bias_type == 'c':
+            self.bias = nn.Parameter(0.2 * torch.randn(outc, 1).float())
+        elif bias_type == 'nc':
+            self.bias = nn.Parameter(0.2 * torch.randn(outc, outn).float())
         else:
-            blockA = self.blockA
-        return blockA, None  # , self.blockD
+            raise NotImplementedError("Bias type {} not implemented".format(bias_type))
 
     def forward(self, x):
-        self.blockA, _ = self.get_AD_(x)
-        return (torch.spmm(self.blockA, x.view(-1, self.in_c)).mm(self.weight)).view(x.shape[0], self.n_out, self.out_c) + self.bias
+        # x: N, inc, inn
+        N = x.shape[0]
+        embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
+        # embedding_weight = x.permute(1, 0, 2).contiguous().view(self.inn, -1)
+        # embedding_weight = torch.reshape(x.permute(1, 0, 2), (self.inn, N * self.inc))
+        embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N * inc)
+        masked_embedding_output = self.mask * embedding_output  # outn, maxD, N * inc
+        pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1)  # outn, N, inc
+        almost_y = torch.bmm(pooled_masked_embedding_output, self.weight.unsqueeze(0).expand(self.outn, self.inc, self.outc))  # outn, N, outc
+        y = almost_y.permute(1, 2, 0).contiguous()
+        return y + self.bias  # N, outc, outn
+
+
+class RegionFGL(nn.Module):
+    def __init__(self, inc, inn, outc, outn, dict_adj_lists, reduction='sum', bias_type='', use_spectral_norm=False):
+        """
+        args
+            inc (int): number of input channels
+            inn (int): Number of input positions
+            outc (int): Number of output channels
+            outn (int): Number of output positions
+            dict_adj_lists (dict of int-> list list int): a dictionary whose values are outn lists containing lists of ints < inn
+            reduction (str): either '', 'sum', or 'mean'
+                defines what pooling to use on the individual outputs from the various FGL modules
+            bias_type (str):
+                'none': no bias is used
+                'c': a bias for each channel (same over output nodes)
+                'nc': a bias for each channel and output node.
+            use_spectral_norm (bool): Whether to use spectral_norm on each individual FGL
+        """
+        super(RegionFGL, self).__init__()
+        assert(reduction in ['', 'sum', 'mean'])
+        maybe_spec_norm = lambda mdl: spectral_norm(mdl) if use_spectral_norm else mdl
+        self.fgls = nn.ModuleDict({
+            str(k): maybe_spec_norm(FGL(inc, inn, outc, outn, v, bias_type=bias_type)) for k, v in dict_adj_lists.items()
+        })
+        self.nregions = len(dict_adj_lists)
+        if reduction == '':
+            self.reducer = lambda ydict: ydict
+        elif reduction == 'sum':
+            self.reducer = lambda ydict: sum(v for _, v in ydict.items())
+        elif reduction == 'mean':
+            self.reducer = lambda ydict: sum(v for _, v in ydict.items()) / self.nregions
+
+    def forward(self, x, specific_region=None):
+        if specific_region is None:
+            return self.reducer({k: vmodel(x) for k, vmodel in self.fgls.items()})
+        else:
+            return {specific_region[0].item(): self.fgls[specific_region[0].item()](x)}
+
+
+class FGL_node_first(nn.Module):
+    # x: N, inn, inc
+    # y: N, outn, outc
+    def __init__(self, inc, inn, outc, outn, adj_list, bias_type=''):
+        """
+        args
+            inc (int): number of input channels
+            inn (int): Number of input positions
+            outc (int): Number of output channels
+            outn (int): Number of output positions
+            adj_list (list list int): outn lists containing lists of ints < inn
+            bias_type (str):
+                'none': no bias is used
+                'c': a bias for each channel (same over output nodes)
+                'nc': a bias for each channel and output node.
+        """
+        super(FGL_node_first, self).__init__()
+        assert(bias_type in ['', 'c', 'nc'])
+        self.inc = inc
+        self.outc = outc
+        self.inn = inn
+        self.outn = outn
+        self.maxD = max(len(al) for al in adj_list)
+        mask = torch.zeros(outn, self.maxD).float()  # Binary mask
+        padded_adj_list = []
+        for nidx, al in enumerate(adj_list):
+            mask[nidx, :len(al)] = 1.0
+            padded_adj_list.append(al + [0 for i in range(self.maxD - len(al))])
+        mask = mask.unsqueeze(2)
+        self.register_buffer('mask', mask)
+
+        # Used as input to embedding matrix.
+        A = torch.tensor(padded_adj_list).long()
+        self.register_buffer('A', A)
+
+        # parameters
+        self.weight = nn.Parameter(0.2 * torch.randn(inc, outc).float())
+        if bias_type == '':
+            bias = torch.zeros(outc).float()
+            self.register_buffer('bias', bias)
+        elif bias_type == 'c':
+            self.bias = nn.Parameter(0.2 * torch.randn(outc).float())
+        elif bias_type == 'nc':
+            self.bias = nn.Parameter(0.2 * torch.randn(outn, outc).float())
+        else:
+            raise NotImplementedError("Bias type {} not implemented".format(bias_type))
+
+    def forward(self, x):
+        # x: N, inn, inc
+        N = x.shape[0]
+        embedding_weight = x.permute(1, 0, 2).contiguous().view(self.inn, -1)
+        # embedding_weight = torch.reshape(x.permute(1, 0, 2), (self.inn, N * self.inc))
+        embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N*inc)
+        masked_embedding_output = self.mask * embedding_output
+        pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1)  # outn, N, inc
+        almost_y = torch.bmm(pooled_masked_embedding_output, self.weight.unsqueeze(0).expand(self.outn, self.inc, self.outc))  # outn, N, outc
+        y = almost_y.permute(1, 0, 2).contiguous()
+        return y + self.bias  # N, outn, outc
 
 
 if __name__ == '__main__':
-    # Simple unit tests
     import pdb
-    # Upsampling
-    # n_out = 2, n_in=1...
-    # out[i] is connected to floor(i / 2)
-    def upsample_test():
-        indsA = [[i, i//2] for i in range(2)]
-        valsA = [1.0 for i in range(len(indsA))]
-        indsA = torch.tensor(indsA).long()
-        valsA = torch.tensor(valsA)
-        A = torch.sparse.FloatTensor(indsA.t(), valsA, size=(2, 1))
-        fgl = FGL(1, 2, A)
-        x = torch.randn(4, 1, 1)
+
+    def test():
+        adj_list = [
+            [1],
+            [2],
+            [3],
+            [0],
+            [2, 3],
+        ]
+        A = torch.tensor([
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+            [1, 0, 0, 0],
+            [0, 0, 1, 1],
+        ]).long()
+        fgl = FGL(2, 4, 3, 5, adj_list)
+        x = torch.randn(8, 4, 2)
         y = fgl(x)
         for i in range(x.shape[0]):
-            assert (y[i] - A.to_dense().mm(x[i]).mm(fgl.weight) - fgl.bias).mean().abs().item() < 1e-6
+            assert (y[i] - A.float().mm(x[i]).mm(fgl.weight) - fgl.bias).mean().abs().item() < 1e-6
         # pdb.set_trace()
-        print("Completed upsample test")
+        print("Completed correctness test")
 
-    # Downsampling
-    def downsample_test():
-        indsA = [[i//2, i] for i in range(8)] + [[i // 2, 0] for i in range(8)]
-        valsA = [1.0 for i in range(len(indsA))]
-        indsA = torch.tensor(indsA).long()
-        valsA = torch.tensor(valsA)
-        A = torch.sparse.FloatTensor(indsA.t(), valsA, size=(4, 8))
-        fgl = FGL(1, 2, A)
-        x = torch.randn(4, 8, 1)
+    # test()
+
+    def profiling_test():
+        N = 32
+        nin = 32768
+        cin = 64
+        nout = 8192
+        cout = 128
+        adj_list = [[i, 2 * i, 3 * i, 4 * i] for i in range(nout)]
+        fgl = FGL(cin, nin, cout, nout, adj_list).cuda()
+        x = torch.randn(N, nin, cin).cuda()
         y = fgl(x)
-        for i in range(x.shape[0]):
-            assert (y[i] - A.to_dense().mm(x[i]).mm(fgl.weight) - fgl.bias).mean().abs().item() < 1e-6
-        print("Completed downsample test")
-
-    # Translation
-    def translation_test():
-        indsA = [[i, i] for i in range(8)] + [[i, 7 - i] for i in range(8)]
-        valsA = [1.0 for i in range(len(indsA))]
-        indsA = torch.tensor(indsA).long()
-        valsA = torch.tensor(valsA)
-        A = torch.sparse.FloatTensor(indsA.t(), valsA, size=(8, 8))
-        fgl = FGL(1, 2, A)
-        x = torch.randn(4, 8, 1)
-        y = fgl(x)
-        for i in range(x.shape[0]):
-            assert (y[i] - A.to_dense().mm(x[i]).mm(fgl.weight) - fgl.bias).mean().abs().item() < 1e-6
-        print("Completed translation test")
-
-    def cuda_test():
-        indsA = [[i, i] for i in range(8)] + [[i, 7 - i] for i in range(8)]
-        valsA = [1.0 for i in range(len(indsA))]
-        indsA = torch.tensor(indsA).long().cuda()
-        valsA = torch.tensor(valsA).cuda()
-        A = torch.sparse.FloatTensor(indsA.t(), valsA, size=(8, 8))
-        fgl = FGL(1, 2, A).cuda()
-        x = torch.randn(4, 8, 1).cuda()
-        y = fgl(x)
-        for i in range(x.shape[0]):
-            assert (y[i] - A.to_dense().mm(x[i]).mm(fgl.weight) - fgl.bias).mean().abs().item() < 1e-6
-        print("Completed cuda test")
-
-    upsample_test()
-    downsample_test()
-    translation_test()
-    if torch.cuda.is_available():
-        cuda_test()
-
-    pdb.set_trace()
+        x = torch.randn(N, nin, cin).cuda()
+        with torch.autograd.profiler.profile(use_cuda=True) as prof:
+            y = fgl(x)
+        print(prof)
+        # with torch.autograd.profiler.profile(use_cuda=True) as prof:
+        #     y.sum().backward()
+        # print(prof)
+    profiling_test()

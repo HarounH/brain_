@@ -30,12 +30,37 @@ def periodic_integer_delta(inp, every=10, start=-1):
     return (inp % every) == ((start + every) % every)
 
 
+def adj_matrix2adj_list(adj_mat):
+    adj_list = [[] for i in range(adj_mat.shape[0])]
+    if isinstance(adj_mat, torch.Tensor):
+        indices = adj_mat._indices().numpy()
+    elif isinstance(scsp.coo_matrix):
+        indices = np.stack([adj_mat.row, adj_mat.col])
+    else:  # Dense matrix?
+        indices = []
+        for r in range(adj_mat.shape[0]):
+            for c in range(adj_mat.shape[1]):
+                if adj_mat[r, c] > 0:
+                    indices.append(r, c)
+        indices = np.array(indices).T
+    indices = indices
+
+
+def transpose_adj_list(n, m, adj_list):
+    # adj_list: n nodes to m nodes
+    adjT = [[] for i in range(m)]
+    for nidx, nadj in enumerate(adj_list):
+        for midx in nadj:
+            adjT[midx].append(nidx)
+    return adjT
+
+
 def dump_everything(args):
     # Destination:
     destination_dir = os.path.join(args.base_output, args.run_code)
     destination_file = os.path.join(destination_dir, "information.json")
     obj = {}
-    args_serializable = {k: v for k, v in args.__dict__.items() if k != "meta"}
+    args_serializable = {k: v for k, v in args.__dict__.items() if ((k != "meta") and (k != "wtree"))}
     args_serializable["meta"] = {k: v for k, v in args.__dict__["meta"].items() if ((k != "s2mu") and (k != "s2std"))}
     args_serializable["meta"]["s2mu"] = {k: v.tolist() for k, v in args.__dict__["meta"]["s2mu"].items()}
     args_serializable["meta"]["s2std"] = {k: v.tolist() for k, v in args.__dict__["meta"]["s2std"].items()}

@@ -18,6 +18,7 @@ class MFGL(nn.Module):
         self.n_out = n_out
         self.As = As
         self.nets = nn.ModuleList([fgl.FGL(in_c, out_c, A, use_bias) for A in As])
+        self.n = len(self.As)
 
     def forward(self, x):
         cur = None
@@ -26,7 +27,7 @@ class MFGL(nn.Module):
                 cur += net(x)
             else:
                 cur = net(x)
-        return cur
+        return cur / self.n
 
 
 if __name__ == '__main__':
