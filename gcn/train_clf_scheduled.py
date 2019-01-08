@@ -142,6 +142,7 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
     assert(len(train_datasets) == 1)
     study = list(train_datasets.keys())[0]
     params = list(model.parameters())
+    pdb.set_trace()
     optimizer = optim.Adam(
         params,
         lr=args.lr,
@@ -151,7 +152,7 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
     if classifiers.scheduled[args.classifier_type]:
         scheduler = lr_scheduler.MultiStepLR(
             optimizer,
-            milestones=[50, 250, 500],  # Start at 0.01, -> 0.001, -> 0.0001 -> 0.00001
+            milestones=[25, 100, 500],  # Start at 0.01, -> 0.001, -> 0.0001 -> 0.00001
             gamma=0.1,
         )
     else:
@@ -196,17 +197,17 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
             temp_time = time.time()
             optimizer.zero_grad()
             loss.backward()
-            # for pn, p in model.named_parameters():
-            #     if p.requires_grad and not("bias" in pn):
-            #         epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
-            #         epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
                     # if torch.isnan(p.grad).any():
                     #     pdb.set_trace()
             optimizer.step()
             backward_prop_time += time.time() - temp_time
             if bidx == 0:
                 print("Batch {}/{} took {}s".format(bidx, len(train_loaders[study]), time.time() - bstart))
-            del x, cvec, loss
+            # del x, cvec, loss
+        for pn, p in model.named_parameters():
+            if p.requires_grad and not("bias" in pn):
+                epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
+                epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
         writer.add_scalars(
             prefix,
             {k: np.mean(v) for k, v in epoch_losses.items()},

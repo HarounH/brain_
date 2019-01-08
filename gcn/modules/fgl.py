@@ -20,7 +20,7 @@ from torch.nn.utils import (
 
 
 class FGL(nn.Module):
-    def __init__(self, inc, inn, outc, outn, adj_list, normalize=True, bias_type='', must_use_padded=False):
+    def __init__(self, inc, inn, outc, outn, adj_list, normalize=True, bias_type='nc', must_use_padded=False):
         """
         Does
             Equation: y = A (cdot(x, u)) v + b

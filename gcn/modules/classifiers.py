@@ -23,7 +23,7 @@ masked = {
 
 scheduled = {
     'fgl0': True,
-    'fgl1': False,
+    'fgl1': True,
     'rfgl0': True,
     'fc': False,
     'cc': False,

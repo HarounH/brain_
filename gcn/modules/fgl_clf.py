@@ -73,11 +73,11 @@ class Classifier1(nn.Module):
             in_features = constants.downsampled_masked_nnz
         else:
             in_features = constants.original_masked_nnz
-        # self.node_sizes = [in_features, z_size * 256, z_size * 64, z_size * 16, z_size * 4, z_size]
-        # self.node_sizes = [in_features, 1024, 256, 128]
-        # self.channel_sizes = [1, 16, 32, 64]  # That mapping should be fairly fast
-        self.node_sizes = [in_features, z_size * 512, z_size * 128, z_size * 32, z_size * 8, z_size]
-        self.channel_sizes = [1, z_size // 16, z_size // 8, z_size // 4, z_size // 2, z_size]
+
+        self.node_sizes = [in_features, z_size * 256, z_size * 32, z_size]
+        self.channel_sizes = [1, 16, 32, 64]  # That mapping should be fairly fast
+        # self.node_sizes = [in_features, z_size * 512, z_size * 128, z_size * 32, z_size * 8, z_size]
+        # self.channel_sizes = [1, z_size // 16, z_size // 8, z_size // 4, z_size // 2, z_size]
 
         adj_list = []
         cur_level = wtree.get_leaves()
@@ -90,14 +90,14 @@ class Classifier1(nn.Module):
         self.downsample0 = fgl.FGL(int(self.channel_sizes[0]), int(self.node_sizes[0]), int(self.channel_sizes[1]), int(self.node_sizes[1]), adj_list[0])  # , must_use_padded=True)
         self.downsample1 = fgl.FGL(int(self.channel_sizes[1]), int(self.node_sizes[1]), int(self.channel_sizes[2]), int(self.node_sizes[2]), adj_list[1])  # , must_use_padded=True)
         self.downsample2 = fgl.FGL(int(self.channel_sizes[2]), int(self.node_sizes[2]), int(self.channel_sizes[3]), int(self.node_sizes[3]), adj_list[2])
-        self.downsample3 = fgl.FGL(int(self.channel_sizes[3]), int(self.node_sizes[3]), int(self.channel_sizes[4]), int(self.node_sizes[4]), adj_list[3])
-        self.downsample4 = fgl.FGL(int(self.channel_sizes[4]), int(self.node_sizes[4]), int(self.channel_sizes[5]), int(self.node_sizes[5]), adj_list[4])
+        # self.downsample3 = fgl.FGL(int(self.channel_sizes[3]), int(self.node_sizes[3]), int(self.channel_sizes[4]), int(self.node_sizes[4]), adj_list[3])
+        # self.downsample4 = fgl.FGL(int(self.channel_sizes[4]), int(self.node_sizes[4]), int(self.channel_sizes[5]), int(self.node_sizes[5]), adj_list[4])
 
         self.activation0 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
         self.activation1 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
         self.activation2 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
-        self.activation3 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
-        self.activation4 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
+        # self.activation3 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
+        # self.activation4 = nn.Sequential(nn.Dropout(dropout_rate))  # nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(0.5))
 
         self.fc = nn.Sequential(
             nn.Linear(self.node_sizes[-1] * self.channel_sizes[-1], self.channel_sizes[-1]),
