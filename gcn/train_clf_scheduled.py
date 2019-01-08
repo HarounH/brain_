@@ -204,8 +204,9 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
                     #     pdb.set_trace()
             optimizer.step()
             backward_prop_time += time.time() - temp_time
-            if bidx > -1:
+            if bidx == 0:
                 print("Batch {}/{} took {}s".format(bidx, len(train_loaders[study]), time.time() - bstart))
+            del x, cvec, loss
         writer.add_scalars(
             prefix,
             {k: np.mean(v) for k, v in epoch_losses.items()},
@@ -275,6 +276,7 @@ if __name__ == '__main__':
     if args.cuda:
         model = model.cuda()
     if args.dataparallel:
+        print("Using dataparallel")
         model = nn.DataParallel(model)
     print("Model instantiated")
     # dump argparse

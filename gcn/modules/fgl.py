@@ -62,8 +62,8 @@ class FGL(nn.Module):
 
         with torch.no_grad():
             self.occupancy = (mask > 0).sum().item() / np.prod(mask.shape)
-            if ((not(must_use_padded)) and (self.occupancy <= 0.5)):  # Arbitrary threshold
-                print("Internal: Packed")
+            if ((not(must_use_padded)) and (self.occupancy <= 0.25)):  # Arbitrary threshold
+                print("FGL Optimization: Using packed. occupancy={}".format(self.occupancy))
                 # Used as input to embedding matrix.
                 lengths_int64 = lengths.squeeze().long()
                 sorted_len, sorted_idx = lengths_int64.sort(0, descending=True)
@@ -79,14 +79,44 @@ class FGL(nn.Module):
 
                 # L = sum(lengths) ... for brains, = inn
                 self.mask_weight_packed = nn.Parameter(0.2 * torch.randn((int(lengths.sum().item()), 1), dtype=torch.float))
-                self.get_almost_y = self.packed_forward
+
+                def get_almost_y(self, x):
+                    # import pdb; pdb.set_trace()
+                    N = x.shape[0]
+                    x = x * self.weight
+                    embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
+                    embedding_output = F.embedding(self.A_packed_data, embedding_weight)  # L, (N * inc)
+                    masked_embedding_output, _ = rnn.pad_packed_sequence(
+                        rnn.PackedSequence(
+                            data=self.mask_weight_packed * embedding_output,
+                            batch_sizes=self.A_packed_batch_sizes,
+                        ),
+                        batch_first=True,
+                    )
+                    pooled_masked_embedding_output = masked_embedding_output.sum(dim=1)  # outn, (N * inc) but in wrong order.
+                    gathered_pooled_masked_embedding_output = pooled_masked_embedding_output[self.original_idx]  # outn, (N * inc) in correct order.
+                    pre_channel_transform = gathered_pooled_masked_embedding_output.view(self.outn, N, self.inc).contiguous().view(-1, self.inc)  # Flattened for linear
+                    almost_y = self.channel_transform(pre_channel_transform).view(self.outn, N, self.outc)  # outn, N, outc
+                    return almost_y
+
+                # self.get_almost_y = self.packed_forward
             else:  # Padded
-                print("Internal: padded")
                 # Used as input to embedding matrix.
                 self.register_buffer('A', A)
                 self.mask_weight = nn.Parameter(0.2 * torch.randn((outn, self.maxD, 1), dtype=torch.float))
-                self.get_almost_y = self.padded_forward
 
+                def get_almost_y(self, x):
+                    N = x.shape[0]
+                    x = (x * self.weight)
+                    embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
+                    embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N * inc)
+                    masked_embedding_output = self.mask_weight * self.mask * embedding_output  # outn, maxD, N * inc
+                    pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1).view(-1, self.inc)  # outn, N, inc
+                    almost_y = self.channel_transform(pooled_masked_embedding_output).view(self.outn, N, self.outc)  # outn, N, outc
+                    return almost_y
+                # self.get_almost_y = self.padded_forward
+
+        self.get_almost_y = get_almost_y
         mask = mask.unsqueeze(2)
         self.register_buffer('mask', mask)
         self.register_buffer('lengths', lengths)
@@ -109,7 +139,7 @@ class FGL(nn.Module):
     def forward(self, x):
         # x: N, inc, inn
         # pdb.set_trace()
-        almost_y = self.get_almost_y(x)
+        almost_y = self.get_almost_y(self, x)
         y = almost_y.contiguous().permute(1, 2, 0).contiguous()
         return y + self.bias  # N, outc, outn
 

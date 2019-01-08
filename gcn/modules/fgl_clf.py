@@ -87,8 +87,8 @@ class Classifier1(nn.Module):
         # adj_list contains adj list from ~200k->...->128
         # we need to transpose each one and them reverse the list
         self.n_layers = len(self.channel_sizes) - 1
-        self.downsample0 = fgl.FGL(int(self.channel_sizes[0]), int(self.node_sizes[0]), int(self.channel_sizes[1]), int(self.node_sizes[1]), adj_list[0])
-        self.downsample1 = fgl.FGL(int(self.channel_sizes[1]), int(self.node_sizes[1]), int(self.channel_sizes[2]), int(self.node_sizes[2]), adj_list[1])
+        self.downsample0 = fgl.FGL(int(self.channel_sizes[0]), int(self.node_sizes[0]), int(self.channel_sizes[1]), int(self.node_sizes[1]), adj_list[0])  # , must_use_padded=True)
+        self.downsample1 = fgl.FGL(int(self.channel_sizes[1]), int(self.node_sizes[1]), int(self.channel_sizes[2]), int(self.node_sizes[2]), adj_list[1])  # , must_use_padded=True)
         self.downsample2 = fgl.FGL(int(self.channel_sizes[2]), int(self.node_sizes[2]), int(self.channel_sizes[3]), int(self.node_sizes[3]), adj_list[2])
         self.downsample3 = fgl.FGL(int(self.channel_sizes[3]), int(self.node_sizes[3]), int(self.channel_sizes[4]), int(self.node_sizes[4]), adj_list[3])
         self.downsample4 = fgl.FGL(int(self.channel_sizes[4]), int(self.node_sizes[4]), int(self.channel_sizes[5]), int(self.node_sizes[5]), adj_list[4])
