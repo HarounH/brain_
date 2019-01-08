@@ -71,10 +71,10 @@ if __name__ == '__main__':
     if os.path.isdir(args.location):  # Generate a bunch of data.
         combinations = []
         ns = [10000]
-        seeds = [1337, 7, 42, 666, 13, 8]
+        seeds = [1337, 42, 666]  # , 13, 8, 42, 53, 99, 10412398, 31235213, 13213, 526456, 12312321]
         lmbdas = [0.0]
         njobss = [4]
-        hx_densitys = [0.01, 0.02, 0.04]
+        hx_densitys = [0.01, 0.05, 0.2, 0.5]
         h_noises = [0.05]
         x_noises = [0.05]
         for (

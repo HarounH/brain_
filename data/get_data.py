@@ -147,6 +147,7 @@ def fetch_contrasts(studies: str or List[str] = 'all', data_dir='/data/', rfmri_
     print('studies={}'.format(studies))
     for study in studies:
         if study == "rfmri":
+            continue  # We don't need rfmri for now.
             data = get_rfmri_bunch(rfmri_dir)
         else:
             if study not in nv_ids:
@@ -201,40 +202,48 @@ def resample_all(df):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("names", nargs='+', type=str, choices=["all"] + list(nv_ids.keys()), help="Which data")
-    parser.add_argument("--stats_only", default=False, action='store_true', help="Use if data is already downloaded and you just want to get some statistics")
+    parser.add_argument("--fetch", action='store_true', help="Provide option if data doesnt exist")
     parser.add_argument("--resample", default=False, action='store_true', help="resample the data or not")
-    parser.add_argument("--concat_rfmri", default=False, action="store_true", help="Concatenate HCP data to existing DF.")
+    parser.add_argument("--stats", default=False, action='store_true', help="Use if data is already downloaded and you just want to get some statistics")
+    parser.add_argument("--resampled_stats", default=False, action='store_true', help="stats for the resampled data alone")
     args = parser.parse_args()
 
-    if not args.stats_only:
+    if args.fetch:
         df = fetch_contrasts(args.names)
         df.to_csv("/data/neurovault/dataframe.csv")
     else:
         df = pd.read_csv("/data/neurovault/dataframe.csv")
-
+    # note: doesnt handle all names and stuff
+    stats_file_name = "stats"
     if args.resample:
         df = resample_all(df)
         df.to_csv("/data/neurovault/resampled_dataframe.csv")
-    else:
+    elif args.resampled_stats:
         df = pd.read_csv("/data/neurovault/resampled_dataframe.csv")
-
-    if args.concat_rfmri:
-        df = df.loc[df.study != "rfmri"]
-        df.set_index(keys=['z_map'], drop=False, inplace=True)
-        df_new = fetch_contrasts(["rfmri"])
-        df_new.set_index(keys=['z_map'], drop=False, inplace=True)
-
-        stats_df_old = pd.read_csv("/data/neurovault/stats.csv")
-        stats_df_old = stats_df_old.loc[stats_df_old.study != "rfmri"]
-        stats_df_new = get_statistics(df_new)
-        df = pd.concat([df, df_new], sort=False)
-        stats_df = pd.concat([stats_df_new, stats_df_old], sort=False)
-
-        df.to_csv("/data/neurovault/resampled_dataframe.csv")
-        stats_df.to_pickle("/data/neurovault/stats.pkl")
-        stats_df.to_csv("/data/neurovault/stats.csv")
     else:
+        stats_file_name = "original_stats"
+
+    if args.stats:
+        # pdb.set_trace()
         stats_df = get_statistics(df)
+        stats_df.to_pickle("/data/neurovault/{}.pkl".format(stats_file_name))
+        stats_df.to_csv("/data/neurovault/{}.csv".format(stats_file_name))
+
+    # if args.concat_rfmri:
+    #     df = df.loc[df.study != "rfmri"]
+    #     df.set_index(keys=['z_map'], drop=False, inplace=True)
+    #     df_new = fetch_contrasts(["rfmri"])
+    #     df_new.set_index(keys=['z_map'], drop=False, inplace=True)
+    #
+    #     stats_df_old = pd.read_csv("/data/neurovault/stats.csv")
+    #     stats_df_old = stats_df_old.loc[stats_df_old.study != "rfmri"]
+    #     stats_df_new = get_statistics(df_new)
+    #     df = pd.concat([df, df_new], sort=False)
+    #     stats_df = pd.concat([stats_df_new, stats_df_old], sort=False)
+    #
+    #     df.to_csv("/data/neurovault/resampled_dataframe.csv")
+    #     stats_df.to_pickle("/data/neurovault/stats.pkl")
+    #     stats_df.to_csv("/data/neurovault/stats.csv")
+    # else:
+    #     stats_df = get_statistics(df)
         # Need to compute statistics
-        stats_df.to_pickle("/data/neurovault/stats.pkl")
-        stats_df.to_csv("/data/neurovault/stats.csv")

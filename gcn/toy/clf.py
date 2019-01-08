@@ -124,7 +124,7 @@ if __name__ == '__main__':
     # Construct As
     if args.model_type == 'baseline':
         As = None
-        ks = [np.prod(dset.xdim), np.prod(dset.hdim), dset.ydim[0]]
+        ks = [np.prod(dset.xdim), args.intermediate_channel * np.prod(dset.hdim), dset.ydim[0]]
     else:
         As = []
         base_As = train_dset.Ahx

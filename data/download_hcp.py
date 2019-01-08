@@ -14,8 +14,12 @@ import time
 from multiprocessing import Pool
 from data.constants import hcp_subject_list, brain_mask
 
+cogspaces_mask = nibabel.load("/data/hcp/hcp_mask.nii.gz")
+N_TIME_STEPS_PER_1200 = 30
+desired_mask = cogspaces_mask
+subfolder = "less_frequent"
+pdb.set_trace()
 # assert(os.path.isfile("~/.aws/credentials"))
-
 s3 = boto3.resource('s3')
 # Stuff to download from
 BUCKET_NAME = 'hcp-openaccess'  # replace with your bucket name
@@ -26,9 +30,10 @@ sub_files = {k: "MNINonLinear/Results/rfMRI_REST{}/rfMRI_REST{}.nii.gz".format(k
 target_location = sys.argv[1]
 if target_location[-1] != "/":
     target_location = target_location + "/"
+
 os.makedirs(target_location, exist_ok=True)
 os.makedirs(os.path.join(target_location, "original"), exist_ok=True)
-os.makedirs(os.path.join(target_location, "downsampled"), exist_ok=True)
+os.makedirs(os.path.join(target_location, subfolder), exist_ok=True)
 
 
 def file_namer(s="", t="", k=""):
@@ -57,18 +62,18 @@ def fetch_subject(param_pair):
         start = time.time()
         nimg = nibabel.load(download_path)
         data = nimg.get_data()
-        for t in range(0, nimg.shape[-1], 10):
+        for t in range(0, nimg.shape[-1], N_TIME_STEPS_PER_1200):
             img = math_img(
                 "img1 * img2",
                 img1=resample_to_img(
                     nibabel.Nifti1Image(
                         data[:, :, :, t], nimg.affine
                     ),
-                    brain_mask
+                    desired_mask
                 ),
-                img2=brain_mask,
+                img2=desired_mask,
             )
-            downsampled_path = os.path.join(target_location, "downsampled", file_namer(s=subject, k=k, t=t))
+            downsampled_path = os.path.join(target_location, subfolder, file_namer(s=subject, k=k, t=t))
             nibabel.save(img, downsampled_path)
         print("Downsampling [{}, {}] took {}s".format(i, k, time.time() - start))
         os.remove(download_path)

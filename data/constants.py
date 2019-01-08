@@ -7,15 +7,20 @@ import torch
 import data.ward_tree as ward_tree
 
 
-IMAGE_SHAPE = [53, 64, 52]
+IMAGE_SHAPE = [53, 64, 52]  # Downsampled size.
 
-dataframe_csv_file = "/data/neurovault/resampled_dataframe.csv"
-statistics_pkl = "/data/neurovault/stats.pkl"
+downsampled_dataframe_csv_file = "/data/neurovault/resampled_dataframe.csv"
+downsampled_statistics_pkl = "/data/neurovault/stats.pkl"
+
+original_dataframe_csv_file = "/data/neurovault/dataframe.csv"
+original_statistics_pkl = "/data/neurovault/original_stats.pkl"
+
 ward_parcellation_image = "/data/hcp/ward_parcellation.nii.gz"
-agglomerative_file_name = "/data/hcp/agglomerative_file_name.pkl"
+downsampled_agglomerative_file_name = "/data/hcp/agglomerative_file_name.pkl"
+original_agglomerative_file_name = "/data/hcp/big_agglomerative_filename.pkl"
 
 
-def get_wtree(filename=agglomerative_file_name):
+def get_wtree(filename=original_agglomerative_file_name):
     return ward_tree.WardTree(filename)
 
 
@@ -28,12 +33,16 @@ basc_images = {}
 for scale in basc_scales:
     basc_images[scale] = nibabel.load(basc_bunch['scale{0:0=3d}'.format(scale)])
 
-bm = nilearn.datasets.load_mni152_brain_mask()
-brain_mask = resample_img(bm, target_shape=basc_images[7].shape, target_affine=basc_images[7].affine, interpolation='nearest')
-brain_mask_numpy = brain_mask.get_data().astype(np.float32)
-brain_mask_tensor = torch.from_numpy(brain_mask_numpy)
+# bm = nilearn.datasets.load_mni152_brain_mask()
+original_brain_mask = nibabel.load("/data/hcp/hcp_mask.nii.gz")
+original_brain_mask_numpy = original_brain_mask.get_data().astype(np.float32)
+original_brain_mask_tensor = torch.from_numpy(original_brain_mask_numpy)
+original_masked_nnz = original_brain_mask_numpy.sum()
 
-masked_nnz = brain_mask_numpy.sum()
+downsampled_brain_mask = resample_img(original_brain_mask, target_shape=basc_images[7].shape, target_affine=basc_images[7].affine, interpolation='nearest')
+downsampled_brain_mask_numpy = downsampled_brain_mask.get_data().astype(np.float32)
+downsampled_brain_mask_tensor = torch.from_numpy(downsampled_brain_mask_numpy)
+downsampled_masked_nnz = downsampled_brain_mask_numpy.sum()
 
 nv_ids = {
     'archi': 4339,

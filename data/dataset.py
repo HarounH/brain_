@@ -24,26 +24,75 @@ import warnings
 import time
 from data.constants import (
     nv_ids,
-    brain_mask,
-    dataframe_csv_file,
-    statistics_pkl,
-    brain_mask_numpy,
+    downsampled_brain_mask,
+    original_brain_mask,
+    downsampled_dataframe_csv_file,
+    original_dataframe_csv_file,
+    downsampled_statistics_pkl,
+    original_statistics_pkl,
+    downsampled_brain_mask_numpy,
+    original_brain_mask_numpy,
 )
 from utils.utils import infinite_iter, multi_key_infinite_iter
 warnings.simplefilter("ignore")
 
 
 class Dataset(TorchDataset):
-    def __init__(self, df, s, meta, masked=False):
+    def __init__(self, df, s, meta, masked=False, downsampled=False, normalization='none', not_lazy=False):
+        '''
+        normalization:
+            none: Do no normalization
+            11: Normalize to [-1, 1] without mean and center normalization
+            0c: 0 center data but dont -1, 1 normalize
+            both: perform both types of normalization
+        '''
+        assert normalization in ['none', '11', '0c', 'both']
         self.df = df
         self.meta = meta
         self.mu = meta['s2mu'][s].astype(np.float32)  # mean_image
         self.std = meta['s2std'][s].astype(np.float32)  # std_image
         self.n = self.df.shape[0]
+
         self.masked = masked
+        self.downsampled = downsampled
+        self.normalization = normalization
+        self.brain_mask = brain_mask = downsampled_brain_mask if downsampled else original_brain_mask
+        self.brain_mask_numpy = downsampled_brain_mask_numpy if downsampled else original_brain_mask_numpy
+
         if masked:
-            self.mu = masking.apply_mask(nibabel.Nifti1Image(self.mu, brain_mask.affine), brain_mask)
-            self.std = masking.apply_mask(nibabel.Nifti1Image(self.std, brain_mask.affine), brain_mask)
+            self.mu = masking.apply_mask(nibabel.Nifti1Image(self.mu, self.brain_mask.affine), self.brain_mask)
+            self.std = masking.apply_mask(nibabel.Nifti1Image(self.std, self.brain_mask.affine), self.brain_mask)
+            self.mul_mask = 1.0
+        else:
+            self.mul_mask = self.brain_mask_numpy
+
+        if normalization == 'none':
+            def nf_(x):
+                return x
+        elif normalization == 'both':
+            def nf_(x):
+                temp = (x - self.mu) / (1e-4 + self.std)
+                return self.mul_mask * (-1.0 + 2.0 * (temp - temp.min()) / (temp.max() - temp.min()))
+        elif normalization == '0c':
+            def nf_(x):
+                return (x - self.mu) / (1e-4 + self.std)
+        elif normalization == '11':
+            def nf_(temp):
+                return self.mul_mask * (-1.0 + 2.0 * (temp - temp.min()) / (temp.max() - temp.min()))
+
+        self.normalization_func = nf_
+
+        self.not_lazy = not_lazy
+        if not_lazy:
+            def load_image(filename):
+                img = nibabel.load(image_file)
+                if self.masked:
+                    this_data = masking.apply_mask(img, self.brain_mask).astype(np.float32)
+                else:
+                    this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
+                return this_data
+            self.data = np.stack([self.normalization_func(load_img(self.df.iloc[idx])) for i in range(self.n)])
+
     def __len__(self):
         return self.n
 
@@ -53,19 +102,27 @@ class Dataset(TorchDataset):
         study = self.meta['s2i'][loc.study]
         task = self.meta['t2i'][loc.task]
         contrast = self.meta['c2i'][loc.contrast]
+        if self.not_lazy:
+            return self.data[idx], study, task, contast
+
         img = nibabel.load(image_file)
+
         if self.masked:
-            this_data = masking.apply_mask(img, brain_mask).astype(np.float32)
-            this_data = (this_data - self.mu) / (1e-4 + self.std)
-            this_data = (-1.0 + 2.0 * (this_data - this_data.min()) / (this_data.max() - this_data.min()))  # [-1 -> 1]
+            this_data = masking.apply_mask(img, self.brain_mask).astype(np.float32)
         else:
             this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
-            this_data = (this_data - self.mu) / (1e-4 + self.std)
-            this_data = brain_mask_numpy * (-1.0 + 2.0 * (this_data - this_data.min()) / (this_data.max() - this_data.min()))  # [-1 -> 1]
-        return this_data, study, task, contrast
+
+        return self.normalization_func(this_data), study, task, contrast
 
 
-def get_datasets(studies, subject_split, debug, masked=False):
+def get_datasets(studies, subject_split, debug, masked=False, downsampled=False, normalization='none', not_lazy=False):
+    if not(downsampled):
+        dataframe_csv_file = original_dataframe_csv_file
+        statistics_pkl = original_statistics_pkl
+    else:
+        dataframe_csv_file = downsampled_dataframe_csv_file
+        statistics_pkl = downsampled_statistics_pkl
+
     df = pd.read_csv(dataframe_csv_file)
     stats = pd.read_pickle(statistics_pkl)
     stats.set_index(keys=['study'], drop=False, inplace=True)
@@ -141,16 +198,16 @@ def get_datasets(studies, subject_split, debug, masked=False):
 
     training_datasets, testing_datasets = {}, {}
     for s, dfs in train_dfs_by_study.items():
-        training_datasets[s] = Dataset(pd.concat(dfs), s, meta, masked)
+        training_datasets[s] = Dataset(pd.concat(dfs), s, meta, masked=masked, downsampled=downsampled, normalization=normalization, not_lazy=not_lazy)
     for s, dfs in test_dfs_by_study.items():
-        testing_datasets[s] = Dataset(pd.concat(dfs), s, meta, masked)
+        testing_datasets[s] = Dataset(pd.concat(dfs), s, meta, masked=masked, downsampled=downsampled, normalization=normalization, not_lazy=not_lazy)
 
     return training_datasets, testing_datasets, meta
 
 
-def get_dataloaders(studies, subject_split, debug, batch_size, num_workers, masked=False):
+def get_dataloaders(studies, subject_split, debug, batch_size, num_workers, masked=False, downsampled=False, normalization='none', not_lazy=False):
     # Get datasets
-    training_datasets, testing_datasets, meta = get_datasets(studies, subject_split, debug, masked)
+    training_datasets, testing_datasets, meta = get_datasets(studies, subject_split, debug, masked=masked, downsampled=downsampled, normalization=normalization, not_lazy=not_lazy)
     train_loaders = {
         s: torch.utils.data.DataLoader(
             dataset,

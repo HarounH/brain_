@@ -3,27 +3,29 @@ import sys
 import subprocess
 import time
 from joblib import Parallel, delayed
+from sklearn.utils import check_random_state
 
 datafiles = os.listdir("/data/gcn_toy/")
 models = ["baseline", "fgl"]
-ics = [1, 3, 5, 10, 128]
-lrs = [0.1, 0.01, 0.001]
-eps = [100, 300]
+ics = [1, 4, 16, 32, 128]
+lrs = [0.1, 0.001, 0.0001, 0.00001]
+seeds = check_random_state(42).randint(0, 100000, size=20).tolist()
+
 MAX_GPU_ID = 4
 optionals = ["--cuda"]
 
 base_cmd = ["python", "-m", "gcn.toy.clf"]
-total_count = len(datafiles) * len(models) * len(ics) * len(lrs)
+total_count = len(datafiles) * len(models) * len(ics) * len(lrs) * len(seeds)
 i = -1
 
 
-def single_run(i, datafile, model_type, ic, lr, gpu_id):
+def single_run(i, datafile, model_type, ic, lr, gpu_id, seed):
     env_dict = dict(os.environ)
     env_dict['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-    filename = "/data/brain_/gcn/toy/outputs/logs/{}_ic{}_lr{}/{}".format(model_type, ic, lr, datafile.replace(".npz", ".log.txt"))
+    filename = "/data/brain_/gcn/toy/outputs/logs/{}_ic{}_lr{:.8f}_seed{}/{}".format(model_type, ic, lr, seed, datafile.replace(".npz", ".log.txt"))
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     print("[{}/{}] Starting {} run on {}".format(i, total_count, model_type, datafile))
-    cmd = base_cmd + [os.path.join("/data/gcn_toy/", datafile), model_type] + optionals + ["-ic", str(ic)] + ["-lr", str(lr)]
+    cmd = base_cmd + [os.path.join("/data/gcn_toy/", datafile), model_type] + optionals + ["-ic", str(ic)] + ["-lr", str(lr)] + ["-s", str(seed)]
     print("$$ {}".format(" ".join(cmd)))
     start_time = time.time()
     with open(filename, "w") as f:
@@ -36,8 +38,9 @@ for datafile in datafiles:
     for model_type in models:
         for ic in ics:
             for lr in lrs:
-                i += 1
-                gpu_id = i % MAX_GPU_ID
-                arguments.append((i, datafile, model_type, ic, lr, gpu_id))
+                for seed in seeds:
+                    i += 1
+                    gpu_id = i % MAX_GPU_ID
+                    arguments.append((i, datafile, model_type, ic, lr, gpu_id, seed))
 
 Parallel(n_jobs=4, verbose=10)(delayed(single_run)(*args) for args in arguments)

@@ -4,21 +4,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
+import data.constants as constants
 
 
 class Classifier(nn.Module):
-    def __init__(self, sizes, activation_layer_maker=lambda i: nn.Tanh):
+    def __init__(self, args, activation_layer_maker=lambda i: nn.Tanh, loadable_state_dict=None, downsampled=False):
         """
             args
             sizes: list int
             activation_layer_maker: int (op #) -> (fn: None -> nn.Module)
         """
-        super(Classifier, self).__init__()
-        net = []
-        for i in range(len(sizes) - 1):
-            net.append(nn.Linear(sizes[i], sizes[i + 1]))
-            net.append(activation_layer_maker(i)())
-        self.net = nn.Sequential(*net)
+        super().__init__()
+        self.args = args
+        if downsampled:
+            in_features = constants.downsampled_masked_nnz
+        else:
+            in_features = constants.original_masked_nnz
+        self.net = nn.Sequential(
+            nn.Linear(int(in_features), len(args.meta['c2i']))
+        )
+        if loadable_state_dict is not None:
+            self.load_state_dict(loadable_state_dict)
 
     def forward(self, x):
         # x: N, self.net[0].in_features

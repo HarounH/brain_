@@ -22,6 +22,7 @@ import torch.utils.data
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
 from tensorboardX import SummaryWriter
 from gcn.modules import (
     classifiers
@@ -63,7 +64,7 @@ def get_args():
     parser.add_argument("-e", "--epochs", dest="epochs", type=int, default=200, help="Number of epochs to run this for")
     parser.add_argument("-brk", "--brk", dest="to_break", type=int, metavar='<int>', default=-1, help="Number of batches after which to breakpoint")  # noqa
     parser.add_argument("-b", "--batch_size", dest="batch_size", type=int, metavar='<int>', default=32, help="Batch size (default=32)")  # noqa
-    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.001, help='Learning rate')  # noqa
+    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.01, help='Learning rate')  # noqa
     parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=1e-4, help='Weight decay')  # noqa
 
     parser.add_argument("-clfc", "--classification_weight_contrast", dest="clfc", default=1.0, type=float, help="Weight to use on classification loss of contrast. Tweak to avoid class dependency")
@@ -147,6 +148,14 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
         betas=(0.5, 0.9),
         weight_decay=args.weight_decay
     )
+    if classifiers.scheduled[args.classifier_type]:
+        scheduler = lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=[50, 250, 500],  # Start at 0.01, -> 0.001, -> 0.0001 -> 0.00001
+            gamma=0.1,
+        )
+    else:
+        scheduler = None
     if checkpoint:
         optimizier.load_state_dict(checkpoint['optimizier'])
         start_batch = load_state_dict(checkpoint['start_batch'])
@@ -155,13 +164,16 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
     to_break = args.to_break
     batch_count = -1
     for eidx in range(args.epochs):
+        if scheduler is not None:
+            scheduler.step()  # Increment count by 1
         start = time.time()
         forward_prop_time = 0.0
         backward_prop_time = 0.0
         gradient_penalty_time = 0.0
         cuda_transfer_time = 0.0
         epoch_losses = defaultdict(lambda: [])
-        for (x, _, _, cvec) in train_loaders[study]:
+        for bidx, (x, _, _, cvec) in enumerate(train_loaders[study]):
+            bstart = time.time()
             batch_count += 1
             if batch_count == to_break:
                 pdb.set_trace()
@@ -184,14 +196,16 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
             temp_time = time.time()
             optimizer.zero_grad()
             loss.backward()
-            for pn, p in model.named_parameters():
-                if p.requires_grad and not("bias" in pn):
-                    epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
-                    epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
+            # for pn, p in model.named_parameters():
+            #     if p.requires_grad and not("bias" in pn):
+            #         epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
+            #         epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
                     # if torch.isnan(p.grad).any():
                     #     pdb.set_trace()
             optimizer.step()
             backward_prop_time += time.time() - temp_time
+            if bidx > -1:
+                print("Batch {}/{} took {}s".format(bidx, len(train_loaders[study]), time.time() - bstart))
         writer.add_scalars(
             prefix,
             {k: np.mean(v) for k, v in epoch_losses.items()},

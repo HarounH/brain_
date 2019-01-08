@@ -409,6 +409,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("n", type=int, help="Number of parcels")
     parser.add_argument("-d", "--dir", dest="directory", default="", type=str, help="Where is it")# parser.add_argument("--rfmri", default=False, action="store_true", help="parcellate HCP resting state")
+    parser.add_argument("-o", "--output", default=constants.downsampled_agglomerative_file_name, help="where to save AgglomerativeClustering object")
     args = parser.parse_args()
     image_list = []
     if args.directory != "":
@@ -424,15 +425,15 @@ if __name__ == '__main__':
     ward = Parcellations(method='ward', n_parcels=args.n,
                          standardize=False, smoothing_fwhm=2.,
                          memory='nilearn_cache', memory_level=1,
-                         verbose=1, mask=constants.brain_mask)
+                         verbose=1, mask=constants.original_brain_mask)
     # Call fit on functional dataset: single subject (less samples).
 
     ward.fit(image_list)
     # pdb.set_trace()
     ward_labels_img = ward.labels_img_
-    with open(constants.agglomerative_file_name, "wb") as f:
+    with open(args.output, "wb") as f:
         pickle.dump(ward.agglomerative, f)
-    with open(constants.agglomerative_file_name, "rb") as f:
+    with open(args.output, "rb") as f:
         agglo = pickle.load(f)
     ward_labels_img.to_filename(constants.ward_parcellation_image)
     # Now, ward_labels_img are Nifti1Image object, it can be saved to file
