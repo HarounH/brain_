@@ -264,6 +264,7 @@ class Parcellations(MultiPCA):
             connectivity = image.grid_to_graph(n_x=shape[0], n_y=shape[1],
                                                n_z=shape[2], mask=mask_)
 
+            # from data.new_agglo import NewAgglomerativeClustering as AgglomerativeClustering
             from sklearn.cluster import AgglomerativeClustering
 
             agglomerative = AgglomerativeClustering(
@@ -424,7 +425,6 @@ if __name__ == '__main__':
     # method.
     ward = Parcellations(method='ward', n_parcels=args.n,
                          standardize=False, smoothing_fwhm=2.,
-                         memory='nilearn_cache', memory_level=1,
                          verbose=1, mask=constants.original_brain_mask)
     # Call fit on functional dataset: single subject (less samples).
 

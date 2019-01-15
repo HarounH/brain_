@@ -25,7 +25,8 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 from tensorboardX import SummaryWriter
 from gcn.modules import (
-    classifiers
+    classifiers,
+    fgl,
 )
 
 import utils.utils as utils
@@ -40,7 +41,7 @@ def get_args():
     # dataset
     parser.add_argument("name", type=str, choices=constants.nv_ids.keys(), help="dataset to use")  # noqa
     # misc
-    parser.add_argument("-ns", "--subject_split", dest="subject_split", action="store_true", default=False, help="If set, train/test split is not by subject.")
+    parser.add_argument("-ns", "--not_subject_split", dest="subject_split", action="store_false", help="If provided, train/test split is not by subject.")
     parser.add_argument("--seed", dest="seed", type=int, metavar='<int>', default=1337, help="Random seed (default=1337)")  # noqa
     parser.add_argument("--cuda", dest="cuda", default=False, action="store_true")  # noqa
     parser.add_argument("-dp", "--dataparallel", dest="dataparallel", default=False, action="store_true")  # noqa
@@ -64,8 +65,8 @@ def get_args():
     parser.add_argument("-e", "--epochs", dest="epochs", type=int, default=200, help="Number of epochs to run this for")
     parser.add_argument("-brk", "--brk", dest="to_break", type=int, metavar='<int>', default=-1, help="Number of batches after which to breakpoint")  # noqa
     parser.add_argument("-b", "--batch_size", dest="batch_size", type=int, metavar='<int>', default=32, help="Batch size (default=32)")  # noqa
-    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.01, help='Learning rate')  # noqa
-    parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=1e-4, help='Weight decay')  # noqa
+    parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.001, help='Learning rate')  # noqa
+    parser.add_argument("--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=0, help='Weight decay')  # noqa
 
     parser.add_argument("-clfc", "--classification_weight_contrast", dest="clfc", default=1.0, type=float, help="Weight to use on classification loss of contrast. Tweak to avoid class dependency")
     parser.add_argument("-clft", "--classification_weight_task", dest="clft", default=0, type=float, help="Weight to use on classification loss of task. Tweak to avoid class dependency")
@@ -76,7 +77,9 @@ def get_args():
     # parser.add_argument('-pe', '--print_every', type=int, default=20, help='How often to print losses during training')  # noqa
 
     parser.add_argument('-ct', "--classifier_type", type=str, default='fgl0', choices=classifiers.versions.keys(), help="What classifier version to use")
+    parser.add_argument("-fglv", "--fgl_version", dest="fgl_version", type=int, default=1, choices=fgl.versions.keys(), help="Which version of FGL to use")
     parser.add_argument('-nr', '--nregions', type=int, default=8, help='How many regions to consider if classifier type is r0')  # noqa
+    parser.add_argument("--no_opt", dest="no_opt", default=False, action="store_true", help="Disable packing/padding optimization")  # noqa
     args = parser.parse_args()
 
     args.names = args.name
@@ -88,7 +91,10 @@ def get_args():
     torch.cuda.manual_seed_all(args.seed)
     # Get run_code
     # Check if base_output exists
-    args.base_output = os.path.join(args.base_output, args.classifier_type)
+    if args.classifier_type.startswith("fgl"):
+        args.base_output = os.path.join(args.base_output, args.classifier_type + "_" + str(args.fgl_version))
+    else:
+        args.base_output = os.path.join(args.base_output, args.classifier_type)
     os.makedirs(args.base_output, exist_ok=True)
     if len(args.run_code) == 0:
         # Generate a run code by counting number of directories in oututs
@@ -117,11 +123,14 @@ def test(args, datasets, loaders, model, writer, batch_idx=-1, prefix="test", sa
             for bidx, (x, _, _, cvec) in enumerate(loader):
                 batch_size = x.shape[0]
 
-                if args.cuda:
+                if args.cuda and not(args.dataparallel):
                     x = x.cuda()
                     # svec = svec.cuda()
                     # tvec = tvec.cuda()
                     cvec = cvec.cuda()
+                elif args.cuda:
+                    x.pin_memory()
+                    cvec = cvec.cuda(async=True)
 
                 cpred = model(x)
                 losses["contrast acc"].append((torch.argmax(cpred.detach(), dim=1) == cvec).float().mean().item())
@@ -142,21 +151,20 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
     assert(len(train_datasets) == 1)
     study = list(train_datasets.keys())[0]
     params = list(model.parameters())
-    pdb.set_trace()
     optimizer = optim.Adam(
         params,
         lr=args.lr,
         betas=(0.5, 0.9),
         weight_decay=args.weight_decay
     )
-    if classifiers.scheduled[args.classifier_type]:
-        scheduler = lr_scheduler.MultiStepLR(
-            optimizer,
-            milestones=[25, 100, 500],  # Start at 0.01, -> 0.001, -> 0.0001 -> 0.00001
-            gamma=0.1,
-        )
-    else:
-        scheduler = None
+    # if classifiers.scheduled[args.classifier_type]:
+    scheduler = lr_scheduler.MultiStepLR(
+        optimizer,
+        milestones=[5, 15, 50],  # Start at 0.001 -> 0.0001, -> 0.00001
+        gamma=0.1,
+    )
+    # else:
+    #     scheduler = None
     if checkpoint:
         optimizier.load_state_dict(checkpoint['optimizier'])
         start_batch = load_state_dict(checkpoint['start_batch'])
@@ -172,6 +180,7 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
         backward_prop_time = 0.0
         gradient_penalty_time = 0.0
         cuda_transfer_time = 0.0
+        norm_computation_time = 0.0
         epoch_losses = defaultdict(lambda: [])
         for bidx, (x, _, _, cvec) in enumerate(train_loaders[study]):
             bstart = time.time()
@@ -181,9 +190,12 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
 
             temp_time = time.time()
             N = x.shape[0]
-            if args.cuda:
+            if args.cuda and not(args.dataparallel):
                 x = x.cuda()
                 cvec = cvec.cuda()
+            elif args.cuda:
+                x.pin_memory()
+                cvec = cvec.cuda(async=True)
             cuda_transfer_time += time.time() - temp_time
 
             temp_time = time.time()
@@ -201,19 +213,21 @@ def train_single_dataset(args, train_datasets, train_loaders, test_datasets, tes
                     #     pdb.set_trace()
             optimizer.step()
             backward_prop_time += time.time() - temp_time
-            if bidx == 0:
-                print("Batch {}/{} took {}s".format(bidx, len(train_loaders[study]), time.time() - bstart))
+            # if bidx == 0:
+            #     print("Batch {}/{} took {}s".format(bidx, len(train_loaders[study]), time.time() - bstart))
             # del x, cvec, loss
-        for pn, p in model.named_parameters():
-            if p.requires_grad and not("bias" in pn):
-                epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
-                epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
+        # temp_time = time.time()
+        # for pn, p in model.named_parameters():
+        #     if p.requires_grad and not("bias" in pn):
+        #         epoch_losses["norm-{}".format(pn)] = p.detach().norm().item()
+        #         epoch_losses["norm-grad-{}".format(pn)] = p.grad.detach().norm().item()
+        # norm_computation_time += time.time() - temp_time
         writer.add_scalars(
             prefix,
             {k: np.mean(v) for k, v in epoch_losses.items()},
             eidx
         )
-        print("[{}: {} / {}]: loss={:.3f} acc={:.3f} cuda={:.2f} forw={:.2f} back={:.2f} total={:.2f}".format(prefix, eidx, args.epochs, np.mean(epoch_losses["{} ce".format(study)]), np.mean(epoch_losses["{} acc".format(study)]), cuda_transfer_time, forward_prop_time, backward_prop_time, time.time() - start))
+        print("[{}: {} / {}]: loss={:.3f} acc={:.3f} cuda={:.2f} forw={:.2f} back={:.2f} norm={:.2f} total={:.2f}".format(prefix, eidx, args.epochs, np.mean(epoch_losses["{} ce".format(study)]), np.mean(epoch_losses["{} acc".format(study)]), cuda_transfer_time, forward_prop_time, backward_prop_time, norm_computation_time, time.time() - start))
 
         ######
         # Val
@@ -263,7 +277,6 @@ if __name__ == '__main__':
     print("Datasets instantiated (lazy loading due to memory concerns)")
     args.meta = meta
     args.wtree = constants.get_wtree()
-    # import pdb; pdb.set_trace()
     print("Ward tree loaded")
     if args.checkpoint != "":
         checkpoint = torch.load(args.checkpoint)

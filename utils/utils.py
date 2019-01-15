@@ -22,6 +22,18 @@ import scipy.sparse as scsp
 import torch.sparse as tsp
 
 
+def kfold_list_split(ls, k):
+    # K-fold split
+    # returns a list of tuples of lists
+    L = len(ls)
+    l = L // k
+    lsls = []
+    for i in range(k):
+        start = i * l
+        end = start + l
+        lsls.append((ls[:start] + ls[end:], ls[start:end]))
+    return lsls
+
 def scsp2tsp(mat):
     return tsp.FloatTensor(torch.from_numpy(np.stack([mat.row, mat.col])).long(), torch.from_numpy(mat.data).float(), mat.shape)
 
@@ -90,12 +102,16 @@ def save_images(tensor_list, title_list, filename, mu_=0.0, std_=1.0, figsize=(1
     figure = plt.figure(figsize=figsize)
     for idx, tensor in enumerate(tensor_list):
         ax = plt.subplot(nrows, ncols, indexes[idx] if indexes else idx)
+        if tensor.shape[0] == 91:
+            mask = constants.original_brain_mask
+        else:
+            mask = constants.downsampled_brain_mask
         plotting.plot_stat_map(
             math_img("img1 * img2",
                 img1=nibabel.Nifti1Image(
-                    mu_ + std_ * tensor.detach().cpu().numpy().squeeze(), constants.brain_mask.affine
+                    mu_ + std_ * tensor.detach().cpu().numpy().squeeze(), mask.affine
                 ),
-                img2=constants.brain_mask
+                img2=mask
             ),
             axes=ax,
             title=title_list[idx],

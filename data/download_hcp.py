@@ -12,12 +12,12 @@ import botocore
 import pdb
 import time
 from multiprocessing import Pool
-from data.constants import hcp_subject_list, brain_mask
+from data.constants import hcp_subject_list  # , brain_mask
 
 cogspaces_mask = nibabel.load("/data/hcp/hcp_mask.nii.gz")
 N_TIME_STEPS_PER_1200 = 30
 desired_mask = cogspaces_mask
-subfolder = "less_frequent"
+subfolder = "less_frequent_v2"
 pdb.set_trace()
 # assert(os.path.isfile("~/.aws/credentials"))
 s3 = boto3.resource('s3')
@@ -62,19 +62,39 @@ def fetch_subject(param_pair):
         start = time.time()
         nimg = nibabel.load(download_path)
         data = nimg.get_data()
-        for t in range(0, nimg.shape[-1], N_TIME_STEPS_PER_1200):
-            img = math_img(
-                "img1 * img2",
-                img1=resample_to_img(
-                    nibabel.Nifti1Image(
-                        data[:, :, :, t], nimg.affine
+
+        new_data = np.stack(
+            [
+                math_img(
+                    "img1 * img2",
+                    img1=resample_to_img(
+                        nibabel.Nifti1Image(
+                            data[:, :, :, t], nimg.affine
+                        ),
+                        desired_mask
                     ),
-                    desired_mask
-                ),
-                img2=desired_mask,
-            )
-            downsampled_path = os.path.join(target_location, subfolder, file_namer(s=subject, k=k, t=t))
-            nibabel.save(img, downsampled_path)
+                    img2=desired_mask,
+                ).get_data()
+                for t in range(0, nimg.shape[-1], N_TIME_STEPS_PER_1200)
+            ],
+            axis=-1
+        )
+        img = nibabel.Nifti1Image(new_data, nimg.affine)
+        downsampled_path = os.path.join(target_location, subfolder, file_namer(s=subject, k=k, t="every20"))
+        nibabel.save(img, downsampled_path)
+        # for t in range(0, nimg.shape[-1], N_TIME_STEPS_PER_1200):
+        #     img = math_img(
+        #         "img1 * img2",
+        #         img1=resample_to_img(
+        #             nibabel.Nifti1Image(
+        #                 data[:, :, :, t], nimg.affine
+        #             ),
+        #             desired_mask
+        #         ),
+        #         img2=desired_mask,
+        #     )
+        #     downsampled_path = os.path.join(target_location, subfolder, file_namer(s=subject, k=k, t=t))
+        #     nibabel.save(img, downsampled_path)
         print("Downsampling [{}, {}] took {}s".format(i, k, time.time() - start))
         os.remove(download_path)
     print("Done with {}:{}".format(i, subject))

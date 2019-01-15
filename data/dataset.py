@@ -3,6 +3,7 @@ Handlers for dataset
 """
 
 
+import math
 import pandas as pd
 import pdb
 import os
@@ -33,7 +34,12 @@ from data.constants import (
     downsampled_brain_mask_numpy,
     original_brain_mask_numpy,
 )
-from utils.utils import infinite_iter, multi_key_infinite_iter
+from utils.utils import (
+    infinite_iter,
+    multi_key_infinite_iter,
+    kfold_list_split,
+
+)
 warnings.simplefilter("ignore")
 
 
@@ -154,10 +160,11 @@ def get_datasets(studies, subject_split, debug, masked=False, downsampled=False,
 
         # Split the study_df into half by subject.
         if subject_split:
+            print("Splitting by subjects")
             study_df = study_df.sort_values(by='subject', axis=0, inplace=False)
             # set the index to be this and don't drop
             study_df = study_df.set_index(keys=['subject'], drop=False, inplace=False)
-            subjects = study_df['subject'].unique().tolist()
+            subjects = np.random.permutation(study_df['subject'].unique().tolist())
             train_subjects = subjects[:len(subjects) // 2]
             test_subjects = subjects[len(subjects) // 2:]  # Split by subject.
             train_dfs = [study_df.loc[study_df.subject == subj] for subj in train_subjects]
@@ -165,6 +172,7 @@ def get_datasets(studies, subject_split, debug, masked=False, downsampled=False,
             train_dfs_by_study[study] = train_dfs
             test_dfs_by_study[study] = test_dfs
         else:
+            print("Splitting randomly - not by subject")
             study_df.set_index(keys=['z_map'], drop=False, inplace=True)
             study_df = study_df.reindex(np.random.permutation(study_df.index))
             # Take study_df and equally split it.
@@ -172,7 +180,6 @@ def get_datasets(studies, subject_split, debug, masked=False, downsampled=False,
             test_df = study_df.iloc[study_df.shape[0] // 2:]
             train_dfs_by_study[study] = [train_df]
             test_dfs_by_study[study] = [test_df]
-
         tasks_arr = study_df['task'].unique().tolist()
         for task in tasks_arr:
             if task not in meta['t2i']:
@@ -225,3 +232,103 @@ def get_dataloaders(studies, subject_split, debug, batch_size, num_workers, mask
         ) for s, dataset in testing_datasets.items()
     }
     return training_datasets, testing_datasets, meta, train_loaders, test_loaders
+
+
+def random_inner_splits(ls, k, frac):
+    # Split ls k times, with each split being random
+    lsls = []
+    for i in range(k):
+        start = np.random.randint(0, math.floor(len(ls) * (1 - frac)))
+        end = start + math.floor(len(ls) * (frac))
+        lsls.append((ls[:start] + ls[end:], ls[start:end]))
+    return lsls
+
+"""
+For good experimentation, we need to do:
+for (train_val, test) in comprehensive_splits_of_full_data:
+    for train, val in comprehensive_splits_of_train_val:
+        fit on train such that val acc is maximized (early stopping)
+        measure acc on test
+"""
+def get_splits(study, outer_k, inner_k, seed, random_inner=0.2, masked=False, downsampled=False, normalization='none', not_lazy=False):
+    # if random_inner is a float, that much fraction is used for validation,
+    # if its None, then inner_k equal splits are made.
+    assert(outer_k > 1 and inner_k > 1)
+    if not(downsampled):
+        dataframe_csv_file = original_dataframe_csv_file
+        statistics_pkl = original_statistics_pkl
+    else:
+        dataframe_csv_file = downsampled_dataframe_csv_file
+        statistics_pkl = downsampled_statistics_pkl
+
+    df = pd.read_csv(dataframe_csv_file)
+    stats = pd.read_pickle(statistics_pkl)
+    stats.set_index(keys=['study'], drop=False, inplace=True)
+    stats_dict = stats.to_dict(orient='index')
+    df = df.loc[df.study == study]
+    meta = {}
+    meta['s2i'] = {}
+    meta['t2i'] = {}
+    meta['c2i'] = {}
+    meta['i2s'] = {}
+    meta['i2t'] = {}
+    meta['i2c'] = {}
+    meta['si2ti'] = defaultdict(lambda: [])
+    meta['ti2ci'] = defaultdict(lambda: [])
+    meta['s2mu'] = {}
+    meta['s2std'] = {}
+
+    meta['s2i'][study] = len(meta['s2i'])
+    meta['i2s'][meta['s2i'][study]] = study
+    study_df = df.loc[df.study == study]
+    si = meta['s2i'][study]
+    tasks_arr = study_df['task'].unique().tolist()
+    for task in tasks_arr:
+        if task not in meta['t2i']:
+            meta['t2i'][task] = len(meta['t2i'])
+            meta['i2t'][meta['t2i'][task]] = task
+        ti = meta['t2i'][task]
+        meta['si2ti'][si].append(ti)
+        contrast_list = study_df.loc[study_df.task == task].contrast.unique().tolist()
+
+        for contrast in contrast_list:
+            if contrast not in meta['c2i']:
+                meta['c2i'][contrast] = len(meta['c2i'])
+                meta['i2c'][meta['c2i'][contrast]] = contrast
+            ci = meta['c2i'][contrast]
+            meta['ti2ci'][ti].append(ci)
+    # print("For {} we have tasks:{}".format(study, tasks_arr))
+    meta['s2mu'][study] = stats_dict[study]['mean_image']
+    meta['s2std'][study] = stats_dict[study]['std_image']
+
+    # Convert them into dicts to keep them serializable
+    meta['si2ti'] = dict(meta['si2ti'])
+    meta['ti2ci'] = dict(meta['ti2ci'])
+
+    def subject_list_to_dataset(subjects):
+        subdf = df[df['subject'].isin(subjects)]
+        return Dataset(subdf, study, meta, masked=masked, downsampled=downsampled, normalization=normalization, not_lazy=not_lazy)
+
+    np.random.seed(seed)  # Ensures same split.
+    subjects = np.random.permutation(df.subject.unique().tolist()).tolist()
+    outer_subject_splits = kfold_list_split(subjects, outer_k)
+    subject_splits = []
+    splits = []
+    for (train_val_subjects, test_subjects) in outer_subject_splits:
+        if random_inner is None:
+            inner_subject_splits = kfold_list_split(train_val_subjects, inner_k)
+        else:
+            inner_subject_splits = random_inner_splits(train_val_subjects, inner_k, random_inner)
+        test_dset = subject_list_to_dataset(test_subjects)
+        inner_dsets  = []
+        for (train_subjects, val_subjects) in inner_subject_splits:
+            train_dset = subject_list_to_dataset(train_subjects)
+            val_dset = subject_list_to_dataset(val_subjects)
+            inner_dsets.append({'train': train_dset, 'val': val_dset,})
+        splits.append({'test': test_dset, 'splits': inner_dsets})
+    return splits, meta
+
+
+if __name__ == '__main__':
+    splits, meta = get_splits('archi', 5, 5, 666)
+    import pdb; pdb.set_trace()

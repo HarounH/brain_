@@ -41,11 +41,14 @@ def get_args():
     # dataset
     parser.add_argument("names", type=str, nargs='+', choices=constants.nv_ids.keys(), help="datasets to use")  # noqa
     # misc
-    parser.add_argument("-ns", "--subject_split", dest="subject_split", action="store_true", default=False, help="If set, train/test split is not by subject.")
+    parser.add_argument("-ns", "--not_subject_split", dest="subject_split", action="store_false", default=True, help="If set, train/test split is not by subject.")
     parser.add_argument("--seed", dest="seed", type=int, metavar='<int>', default=1337, help="Random seed (default=1337)")  # noqa
     parser.add_argument("--cuda", dest="cuda", default=False, action="store_true")  # noqa
     parser.add_argument("-dp", "--dataparallel", dest="dataparallel", default=False, action="store_true")  # noqa
     parser.add_argument("--debug", default=False, action="store_true", help="Debug mode")
+    parser.add_argument("--downsampled", default=False, action="store_true", help="Use downsampled (to BASC template) data")
+    parser.add_argument("--not_lazy", default=False, action="store_true", help="If provided, all data is loaded right away instead of being loaded on the fly")
+    parser.add_argument("-nrm", "--normalization", dest="normalization", choices=['none', 'both', '0c', '11'], default="none", help="What kind of normalization to use")
 
     # compute
     parser.add_argument("--mode", choices=['train', 'test'], default='train')
@@ -73,8 +76,8 @@ def get_args():
     parser.add_argument('-se', '--save_every', type=int, default=1000, help='How often to save during training')  # noqa
     # parser.add_argument('-pe', '--print_every', type=int, default=20, help='How often to print losses during training')  # noqa
 
-    parser.add_argument('-gt', "--generator_type", type=str, default='0', choices=generators.versions.keys(), help="What generator version to use")
-    parser.add_argument('-dt', "--discriminator_type", type=str, default='0',  choices=discriminators.versions.keys(), help="What discriminator version to use")
+    parser.add_argument('-gt', "--generator_type", type=str, default='big0', choices=generators.versions.keys(), help="What generator version to use")
+    parser.add_argument('-dt', "--discriminator_type", type=str, default='big0',  choices=discriminators.versions.keys(), help="What discriminator version to use")
     parser.add_argument('-gpt', "--gp_type", type=str, choices=gps.versions.keys(), default='wgangp', help="What gradient penalty version to use")
     parser.add_argument('-bm', "--gen_mask", dest="gen_mask", default=True, action="store_false", help="Mask output from generator")
     args = parser.parse_args()
@@ -150,13 +153,13 @@ def test(args, datasets, loaders, model, writer, batch_idx=-1, prefix="test", sa
                     os.makedirs(batch_dir, exist_ok=True)
                     for i in range(0, gz.shape[0], 10):  # For each image in the batch
                         utils.save_images(
-                            [gz[i].view(*constants.IMAGE_SHAPE)],
+                            [gz[i].view(*(gz[i].shape))],
                             ["generated"],
                             os.path.join(batch_dir, "gen_{}_{}_{}_{}.png".format(args.meta['i2s'][svec[i].item()], args.meta['i2t'][tvec[i].item()], args.meta['i2c'][cvec[i].item()], i)),
                             indexes=[1],
                             nrows=1,
-                            mu_=datasets[s].mu,
-                            std_=datasets[s].std,
+                            # mu_=datasets[s].mu,
+                            # std_=datasets[s].std,
                         )
                 # Log stuff
             writer.add_scalars(
@@ -374,13 +377,17 @@ if __name__ == '__main__':
     args = get_args()
 
     # datasets
-    cpu_count = 2 * multiprocessing.cpu_count() // 3
+    cpu_count = multiprocessing.cpu_count() // 3
     trn, tst, meta, train_loaders, test_loaders = dataset.get_dataloaders(
         studies=args.names,
         subject_split=args.subject_split,
         debug=args.debug,
         batch_size=args.batch_size,
-        num_workers=cpu_count
+        num_workers=cpu_count,
+        masked=False,
+        downsampled=args.downsampled,
+        normalization=args.normalization,
+        not_lazy=args.not_lazy,
     )
     args.meta = meta
 
@@ -391,9 +398,14 @@ if __name__ == '__main__':
     else:
         checkpoint = None
         model_state_dict = None
+    if generators.infer_downsampled[args.generator_type]:
+        bm_tensor = constants.downsampled_brain_mask_tensor
+    else:
+        bm_tensor = constants.original_brain_mask_tensor
+
     model = shacgan.SHACGAN(
         args,
-        gen_mask=constants.brain_mask_tensor if args.gen_mask else None,
+        gen_mask=bm_tensor if args.gen_mask else None,
         gen_version=args.generator_type,
         disc_version=args.discriminator_type,
         gradient_penalty=args.gp_type,

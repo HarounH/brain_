@@ -21,17 +21,17 @@ class CoordConvClassifier0(nn.Module):
             self.z_size = z_size
             conv_net = []
             # 53, 64, 52
-            conv_net.append(blocks.CC3D((53, 64, 52), 1, z_size // 16, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample0
+            conv_net.append(blocks.CC3D((53, 64, 52), 1, z_size // 16, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample0
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation0
-            conv_net.append(blocks.CC3D((26, 32, 26), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample1
+            conv_net.append(blocks.CC3D((26, 32, 26), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample1
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation1
-            conv_net.append(blocks.CC3D((13, 16, 13), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample2
+            conv_net.append(blocks.CC3D((13, 16, 13), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample2
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation2
             # contrast
-            conv_net.append(blocks.CC3D((6, 8, 6), z_size // 4, z_size // 2, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample3
+            conv_net.append(blocks.CC3D((6, 8, 6), z_size // 4, z_size // 2, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample3
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation3
             # task
-            conv_net.append(blocks.CC3D((3, 4, 3), z_size // 2, z_size, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample4
+            conv_net.append(blocks.CC3D((3, 4, 3), z_size // 2, z_size, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample4
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(dropout_rate)))  # self.activation4
             self.conv_net = nn.Sequential(*conv_net)
             self.ending_vol = 2
@@ -39,17 +39,17 @@ class CoordConvClassifier0(nn.Module):
             self.z_size = z_size
             conv_net = []
             # 91, 109, 91
-            conv_net.append(blocks.CC3D((91, 109, 91), 1, z_size // 32, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample0
+            conv_net.append(blocks.CC3D((91, 109, 91), 1, z_size // 32, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample0
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation0
-            conv_net.append(blocks.CC3D((45, 54, 45), z_size // 32, z_size // 16, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample1
+            conv_net.append(blocks.CC3D((45, 54, 45), z_size // 32, z_size // 16, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample1
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation1
-            conv_net.append(blocks.CC3D((22, 27, 22), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample2
+            conv_net.append(blocks.CC3D((22, 27, 22), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample2
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation2
             # contrast
-            conv_net.append(blocks.CC3D((11, 13, 11), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample3
+            conv_net.append(blocks.CC3D((11, 13, 11), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample3
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation3
             # task
-            conv_net.append(blocks.CC3D((5, 6, 5), z_size // 4, z_size, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample4
+            conv_net.append(blocks.CC3D((5, 6, 5), z_size // 4, z_size, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample4
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(dropout_rate)))
             self.conv_net = nn.Sequential(*conv_net)
             self.ending_vol = 2 * 3 * 2
@@ -99,17 +99,17 @@ class ConvClassifier0(nn.Module):
             self.z_size = z_size
             conv_net = []
             # 91, 109, 91
-            conv_net.append(blocks.CC3D((91, 109, 91), 1, z_size // 32, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample0
+            conv_net.append(blocks.CC3D((91, 109, 91), 1, z_size // 32, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample0
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation0
-            conv_net.append(blocks.CC3D((45, 54, 45), z_size // 32, z_size // 16, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample1
+            conv_net.append(blocks.CC3D((45, 54, 45), z_size // 32, z_size // 16, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample1
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation1
-            conv_net.append(blocks.CC3D((22, 27, 22), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample2
+            conv_net.append(blocks.CC3D((22, 27, 22), z_size // 16, z_size // 8, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample2
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation2
             # contrast
-            conv_net.append(blocks.CC3D((11, 13, 11), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample3
+            conv_net.append(blocks.CC3D((11, 13, 11), z_size // 8, z_size // 4, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample3
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2)))  # self.activation3
             # task
-            conv_net.append(blocks.CC3D((5, 6, 5), z_size // 4, z_size, kernel=4, stride=2, padding=1, use_spectral_norm=True)) # self.downsample4
+            conv_net.append(blocks.CC3D((5, 6, 5), z_size // 4, z_size, kernel=4, stride=2, padding=1, use_weight_norm=True)) # self.downsample4
             conv_net.append(nn.Sequential(nn.LeakyReLU(0.2), nn.Dropout(dropout_rate)))
             self.conv_net = nn.Sequential(*conv_net)
             self.ending_vol = 2 * 3 * 2

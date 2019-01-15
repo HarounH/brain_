@@ -15,58 +15,171 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import (
     spectral_norm,
+    weight_norm,
     rnn,
 )
+import utils.utils as utils
+import torch_scatter
+
+
+DENSITY_THRESHOLD = 0.25  # If sparse adjacency matrix, A, is less occupied than this, then packed tensors are used instead of padded for embedding (which is the bottleneck)
 
 
 class FGL(nn.Module):
-    def __init__(self, inc, inn, outc, outn, adj_list, normalize=True, bias_type='nc', must_use_padded=False):
+    def __init__(self, inc, inn, outc, outn, adj_list, op_order='132', reduction='max', bias_type='nc', optimization='packed0.3'):
         """
-        Does
-            Equation: y = A (cdot(x, u)) v + b
-            where:
-            A is a sparse matrix of size (n_out, n_in) with learnable non-zero values (implemented as a dense mask and a dense parameter)
-            cdot is hadamard
-            u is a learnable weight matrix of size (n_in, c_in)
-            v is a learnable weight matrix of size (c_in, c_out) ... I suspect this will help when we're trying to do the multi-region version with a summation
-            b is a bias(edited)
-        args
-            inc (int): number of input channels
-            inn (int): Number of input positions
-            outc (int): Number of output channels
-            outn (int): Number of output positions
-            adj_list (list list int): outn lists containing lists of ints < inn
-            bias_type (str):
-                'none': no bias is used
-                'c': a bias for each channel (same over output nodes)
-                'nc': a bias for each channel and output node.
+            Does three things:
+                1. Node/Feature weights: parameter of size (n * c)
+                2. Feature map application: parameter of size (inc * outc)
+                3. Node reduction (no parameters)
+            (and also adds the bias, but whatever).
+            In a fully connected net, 1, 2, 3 would be combined into one - leading to
+            a large parameter of size (inn * outn * inc * outc).
+            This is infeasible, and the kind of split proposed by FGL is doable.
+
+            Args:
+                inc (int): Input channels
+                inn (int): Input positions
+                outc (int): Output channels
+                outn (int): Output positions
+                adj_list (int list list):
+                    adjacency list, from output nodes to input nodes.
+
+                op_order (str): string determining the variant of FGL
+                    some permutation of 1, 2, 3 - determines the order in which 3 steps are done.
+
+                reduction (str): Determines how reduction over nodes in each output node is done
+                    "sum":
+                    "learn": A sum reduction with learnt weights.
+                    "mean":
+                    "max":
+
+                bias_type (str):
+                    'none': no bias is used
+                    'c': a bias for each channel (same over output nodes)
+                    'nc': a bias for each channel and output node.
+
+                optimization (str): determines how the node-reduction operation is implemented.
+                    "none": Good old padded adjacency list is used
+                    "tree": if the adjacency list comes from a tree, an optimization using scatter_all_ is used
+                    "packed[0-9\.]*":
+                        If the density of A is greater than the number specified (if no number, then a default is used),
+                        then, a packed representation is used instead of padded.
+                        For brain-decoding, A usually has a density < 25%, so this can speed up the embedding stage a LOT!
         """
-        super(FGL, self).__init__()
+        super().__init__()
+        assert(len(op_order) == 3)
+        assert(reduction in ["sum", "mean", "max", "learn"])
+        self.reduction = reduction
         assert(bias_type in ['', 'c', 'nc'])
         self.inc = inc
         self.outc = outc
         self.inn = inn
         self.outn = outn
-        self.maxD = max(len(al) for al in adj_list)
-        mask = torch.zeros(outn, self.maxD).float()  # Binary mask
-        padded_adj_list = []
-        for nidx, al in enumerate(adj_list):
-            mask[nidx, :len(al)] = 1.0
-            padded_adj_list.append(al + [0 for i in range(self.maxD - len(al))])
+        lengths = torch.tensor([len(al) for al in adj_list]).long()
+        lengths_f32 = lengths.float().unsqueeze(1)
+        self.register_buffer('lengths', lengths)
+        self.register_buffer('lengths_f32', lengths_f32)
+        self.maxD = lengths.max().item()
+        self.op_order = op_order
 
-        lengths = mask.sum(dim=1, keepdim=True)
-        if normalize:
-            mask = mask / (1e-8 + lengths)
+        # bias is easy
+        if bias_type == '':
+            bias = torch.zeros(outc).float()
+            self.register_buffer('bias', bias)
+        elif bias_type == 'c':
+            self.bias = nn.Parameter(0.2 * torch.randn(outc).float())
+        elif bias_type == 'nc':
+            self.bias = nn.Parameter(0.2 * torch.randn(outc, outn).float())
+        else:
+            raise NotImplementedError("Bias type {} not implemented".format(bias_type))
 
-        A = torch.tensor(padded_adj_list).long()  # N, T
+        # Feature map... never changes.
+        self.ft_weight = nn.Parameter((-1.0 + 2 * torch.rand(inc, outc)) * np.sqrt(6.0 / (1.0 + 5 * inc)))
 
-        with torch.no_grad():
-            self.occupancy = (mask > 0).sum().item() / np.prod(mask.shape)
-            if ((not(must_use_padded)) and (self.occupancy <= 0.25)):  # Arbitrary threshold
-                print("FGL Optimization: Using packed. occupancy={}".format(self.occupancy))
-                # Used as input to embedding matrix.
-                lengths_int64 = lengths.squeeze().long()
-                sorted_len, sorted_idx = lengths_int64.sort(0, descending=True)
+        def feature_transform_(self, x):
+            # x: N, inc, *
+            # output: N, outc, *
+            # Hallelujah PyTorch 1.0!
+            return torch.einsum("...ij,ik->...kj", x, self.ft_weight).contiguous()
+
+        # Node/Feature weight.
+        c_ = inc if op_order.find("2") > op_order.find("1") else outc
+        n_ = inn if op_order.find("3") > op_order.find("1") else outn
+        self.nf_weight = nn.Parameter(torch.randn(c_, n_))
+
+        def nf_transform_(self, x):
+            # x: N, c_, n_
+            # output: N, c_, n_
+            return (x * self.nf_weight).contiguous()
+
+        self.func_map = {
+            "1": nf_transform_,
+            "2": feature_transform_,
+            "3": None,  # Set based on optimization
+        }
+        # Reduction
+        if optimization == "tree":
+            print("FGL: Using tree optimization")
+            indices = torch.tensor(utils.transpose_adj_list(self.outn, self.inn, adj_list)).long().t().unsqueeze(0)
+            self.register_buffer('indices', indices)
+
+            # Hallelujah torch-scatter
+            if reduction == "sum":
+                self.scatter_func_ = torch_scatter.scatter_add
+            elif reduction == "mean":
+                self.scatter_func_ = torch_scatter.scatter_mean
+            elif reduction == "max":
+                self.scatter_func_ = torch_scatter.scatter_max
+            else:
+                raise NotImplementedError("Cant do {} reduction with {} optimization".format(reduction, optimization))
+
+            def reduction_(self, x):
+                # x: N, *, inn
+                # output: N, *, outn
+                y = torch.zeros(x.shape[0], x.shape[1], self.outn, dtype=torch.float, device=x.device)
+                self.scatter_func_(x, self.indices.to(x.device).expand(x.shape), dim=2, out=y)
+                return y
+
+            self.func_map["3"] = reduction_
+        else:
+            mask = torch.zeros(outn, self.maxD).float()  # Binary mask
+            padded_adj_list = []
+            for nidx, al in enumerate(adj_list):
+                mask[nidx, :len(al)] = 1.0
+                padded_adj_list.append(al + [0 for i in range(self.maxD - len(al))])
+            A = torch.tensor(padded_adj_list).long()  # N, T
+            self.density = mask.sum().item() / np.prod(mask.shape)
+            self.total_length = self.lengths.sum().item()
+
+            if (optimization != "none") and (self.density > float(optimization[6:])):
+                print("FGL: Using padded variant: density={}".format(self.density))
+                self.register_buffer('A', A)
+                if reduction == "learn":
+                    self.mask_weight = nn.Parameter(torch.randn_like(mask, dtype=torch.float))
+                else:
+                    self.mask_weight = 1.0
+
+                def reduction_(self, x):
+                    # Padded embedding and stuff.
+                    # x: N, _, inn
+                    # y: N, _, outn
+                    N, c, n = x.shape
+                    embw = x.view(-1, n).t()
+                    embo = F.embedding(self.A, embw)  # outn, maxD, (N * c)
+                    masked_embo = self.mask_weight * self.mask * embo  # outn, maxD, (N * c)
+                    if self.reduction == "max":
+                        pooled_masked_embo = masked_embo.max(dim=1)[0]
+                    else:
+                        pooled_masked_embo = masked_embo.sum(dim=1)
+                        if self.reduction == "mean":
+                            pooled_masked_embo = pooled_masked_embo / self.lengths_f32
+                    return pooled_masked_embo.t().view(N, c, -1).contiguous()
+                self.func_map["3"] = reduction_
+            else:
+                print("FGL: Using packed variant: density={}".format(self.density))
+
+                sorted_len, sorted_idx = lengths.sort(0, descending=True)
                 _, original_idx = sorted_idx.sort(0, descending=True)
                 A_packed = rnn.pack_padded_sequence(A[sorted_idx, :], sorted_len, batch_first=True)
 
@@ -77,377 +190,90 @@ class FGL(nn.Module):
                 self.register_buffer('sorted_idx', sorted_idx)
                 self.register_buffer('original_idx', original_idx)  # Enable CUDA transfer
 
-                # L = sum(lengths) ... for brains, = inn
-                self.mask_weight_packed = nn.Parameter(0.2 * torch.randn((int(lengths.sum().item()), 1), dtype=torch.float))
+                if reduction == "learn":
+                    self.mask_weight_packed = nn.Parameter(torch.randn((int(lengths.sum().item()), 1), dtype=torch.float))
+                else:
+                    self.mask_weight_packed = 1.0
 
-                def get_almost_y(self, x):
-                    # import pdb; pdb.set_trace()
-                    N = x.shape[0]
-                    x = x * self.weight
-                    embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
-                    embedding_output = F.embedding(self.A_packed_data, embedding_weight)  # L, (N * inc)
-                    masked_embedding_output, _ = rnn.pad_packed_sequence(
+                def reduction_(self, x):
+                    # x: N, c, inn
+                    # output: N, c, outn
+                    N, c, n = x.shape
+                    embw = x.view(-1, n).t()
+                    embo = F.embedding(self.A_packed_data, embw)  # L, (N * c)
+                    masked_embo, _ = rnn.pad_packed_sequence(
                         rnn.PackedSequence(
-                            data=self.mask_weight_packed * embedding_output,
+                            data=self.mask_weight_packed * embo,
                             batch_sizes=self.A_packed_batch_sizes,
                         ),
                         batch_first=True,
-                    )
-                    pooled_masked_embedding_output = masked_embedding_output.sum(dim=1)  # outn, (N * inc) but in wrong order.
-                    gathered_pooled_masked_embedding_output = pooled_masked_embedding_output[self.original_idx]  # outn, (N * inc) in correct order.
-                    pre_channel_transform = gathered_pooled_masked_embedding_output.view(self.outn, N, self.inc).contiguous().view(-1, self.inc)  # Flattened for linear
-                    almost_y = self.channel_transform(pre_channel_transform).view(self.outn, N, self.outc)  # outn, N, outc
-                    return almost_y
+                    )  # outn, D, (N * c)
+                    if self.reduction == "max":
+                        pooled_masked_embo = masked_embo.max(dim=1)[0]
+                    else:
+                        pooled_masked_embo = masked_embo.sum(dim=1)
+                        if self.reduction == "mean":
+                            pooled_masked_embo = pooled_masked_embo / self.lengths_f32
+                    return pooled_masked_embo.t().view(N, c, -1).contiguous()
 
-                # self.get_almost_y = self.packed_forward
-            else:  # Padded
-                # Used as input to embedding matrix.
-                self.register_buffer('A', A)
-                self.mask_weight = nn.Parameter(0.2 * torch.randn((outn, self.maxD, 1), dtype=torch.float))
-
-                def get_almost_y(self, x):
-                    N = x.shape[0]
-                    x = (x * self.weight)
-                    embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
-                    embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N * inc)
-                    masked_embedding_output = self.mask_weight * self.mask * embedding_output  # outn, maxD, N * inc
-                    pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1).view(-1, self.inc)  # outn, N, inc
-                    almost_y = self.channel_transform(pooled_masked_embedding_output).view(self.outn, N, self.outc)  # outn, N, outc
-                    return almost_y
-                # self.get_almost_y = self.padded_forward
-
-        self.get_almost_y = get_almost_y
-        mask = mask.unsqueeze(2)
-        self.register_buffer('mask', mask)
-        self.register_buffer('lengths', lengths)
-
-        # parameters
-        # self.mask_weight ... initialized based on occupancy
-        self.weight = nn.Parameter(0.2 * torch.randn(inc, inn).float())  # u
-        self.channel_transform = nn.Linear(inc, outc)  # v
-
-        if bias_type == '':
-            bias = torch.zeros(outc, 1).float()
-            self.register_buffer('bias', bias)
-        elif bias_type == 'c':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc, 1).float())
-        elif bias_type == 'nc':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc, outn).float())
-        else:
-            raise NotImplementedError("Bias type {} not implemented".format(bias_type))
+                self.func_map["3"] = reduction_
 
     def forward(self, x):
-        # x: N, inc, inn
-        # pdb.set_trace()
-        almost_y = self.get_almost_y(self, x)
-        y = almost_y.contiguous().permute(1, 2, 0).contiguous()
-        return y + self.bias  # N, outc, outn
-
-    def padded_forward(self, x):
-        N = x.shape[0]
-        x = (x * self.weight)
-        embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
-        embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N * inc)
-        masked_embedding_output = self.mask_weight * self.mask * embedding_output  # outn, maxD, N * inc
-        pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1).view(-1, self.inc)  # outn, N, inc
-        almost_y = self.channel_transform(pooled_masked_embedding_output).view(self.outn, N, self.outc)  # outn, N, outc
-        return almost_y
-
-    def packed_forward(self, x):
-        # import pdb; pdb.set_trace()
-        N = x.shape[0]
-        x = x * self.weight
-        embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
-        embedding_output = F.embedding(self.A_packed_data, embedding_weight)  # L, (N * inc)
-        masked_embedding_output, _ = rnn.pad_packed_sequence(
-            rnn.PackedSequence(
-                data=self.mask_weight_packed * embedding_output,
-                batch_sizes=self.A_packed_batch_sizes,
-            ),
-            batch_first=True,
-        )
-        pooled_masked_embedding_output = masked_embedding_output.sum(dim=1)  # outn, (N * inc) but in wrong order.
-        gathered_pooled_masked_embedding_output = pooled_masked_embedding_output[self.original_idx]  # outn, (N * inc) in correct order.
-        pre_channel_transform = gathered_pooled_masked_embedding_output.view(self.outn, N, self.inc).contiguous().view(-1, self.inc)  # Flattened for linear
-        almost_y = self.channel_transform(pre_channel_transform).view(self.outn, N, self.outc)  # outn, N, outc
-        return almost_y
-
-
-class FGL_useless(nn.Module):
-    # x: N, inc, inn
-    # y: N, outc, outn
-    def __init__(self, inc, inn, outc, outn, adj_list, normalize=True, bias_type=''):
-        """
-        args
-            inc (int): number of input channels
-            inn (int): Number of input positions
-            outc (int): Number of output channels
-            outn (int): Number of output positions
-            adj_list (list list int): outn lists containing lists of ints < inn
-            bias_type (str):
-                'none': no bias is used
-                'c': a bias for each channel (same over output nodes)
-                'nc': a bias for each channel and output node.
-        """
-        super(FGL_useless, self).__init__()
-        assert(bias_type in ['', 'c', 'nc'])
-        self.inc = inc
-        self.outc = outc
-        self.inn = inn
-        self.outn = outn
-        self.maxD = max(len(al) for al in adj_list)
-        mask = torch.zeros(outn, self.maxD).float()  # Binary mask
-        padded_adj_list = []
-        for nidx, al in enumerate(adj_list):
-            mask[nidx, :len(al)] = 1.0
-            padded_adj_list.append(al + [0 for i in range(self.maxD - len(al))])
-        if normalize:
-            mask = mask / (1e-8 + mask.sum(dim=1, keepdim=True))
-        mask = mask.unsqueeze(2)
-        self.register_buffer('mask', mask)
-
-        # Used as input to embedding matrix.
-        A = torch.tensor(padded_adj_list).long()
-        self.register_buffer('A', A)
-
-        # parameters
-        self.weight = nn.Parameter(0.2 * torch.randn(inc, outc).float())
-        if bias_type == '':
-            bias = torch.zeros(outc, 1).float()
-            self.register_buffer('bias', bias)
-        elif bias_type == 'c':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc, 1).float())
-        elif bias_type == 'nc':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc, outn).float())
-        else:
-            raise NotImplementedError("Bias type {} not implemented".format(bias_type))
-
-    def forward(self, x):
-        # x: N, inc, inn
-        N = x.shape[0]
-        embedding_weight = x.view(-1, self.inn).t()  # .contiguous?
-        # embedding_weight = x.permute(1, 0, 2).contiguous().view(self.inn, -1)
-        # embedding_weight = torch.reshape(x.permute(1, 0, 2), (self.inn, N * self.inc))
-        embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N * inc)
-        masked_embedding_output = self.mask * embedding_output  # outn, maxD, N * inc
-        pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1)  # outn, N, inc
-        almost_y = torch.bmm(pooled_masked_embedding_output, self.weight.unsqueeze(0).expand(self.outn, self.inc, self.outc))  # outn, N, outc
-        y = almost_y.permute(1, 2, 0).contiguous()
-        return y + self.bias  # N, outc, outn
-
-
-class RegionFGL(nn.Module):
-    def __init__(self, inc, inn, outc, outn, dict_adj_lists, normalize=True, reduction='sum', bias_type='', use_spectral_norm=False):
-        """
-        args
-            inc (int): number of input channels
-            inn (int): Number of input positions
-            outc (int): Number of output channels
-            outn (int): Number of output positions
-            dict_adj_lists (dict of int-> list list int): a dictionary whose values are outn lists containing lists of ints < inn
-            reduction (str): either '', 'sum', or 'mean'
-                defines what pooling to use on the individual outputs from the various FGL modules
-            bias_type (str):
-                'none': no bias is used
-                'c': a bias for each channel (same over output nodes)
-                'nc': a bias for each channel and output node.
-            use_spectral_norm (bool): Whether to use spectral_norm on each individual FGL
-        """
-        super(RegionFGL, self).__init__()
-        assert(reduction in ['', 'sum', 'mean'])
-        maybe_spec_norm = lambda mdl: spectral_norm(mdl) if use_spectral_norm else mdl
-        self.fgls = nn.ModuleDict({
-            str(k): maybe_spec_norm(FGL(inc, inn, outc, outn, v, normalize=normalize, bias_type=bias_type)) for k, v in dict_adj_lists.items()
-        })
-        self.nregions = len(dict_adj_lists)
-        if reduction == '':
-            self.reducer = lambda ydict: ydict
-        elif reduction == 'sum':
-            self.reducer = lambda ydict: sum(v for _, v in ydict.items())
-        elif reduction == 'mean':
-            self.reducer = lambda ydict: sum(v for _, v in ydict.items()) / self.nregions
-
-    def forward(self, x, specific_region=None):
-        if specific_region is None:
-            return self.reducer({k: vmodel(x) for k, vmodel in self.fgls.items()})
-        else:
-            return {specific_region[0].item(): self.fgls[specific_region[0].item()](x)}
-
-
-class FGL_node_first(nn.Module):
-    # x: N, inn, inc
-    # y: N, outn, outc
-    def __init__(self, inc, inn, outc, outn, adj_list, bias_type=''):
-        """
-        args
-            inc (int): number of input channels
-            inn (int): Number of input positions
-            outc (int): Number of output channels
-            outn (int): Number of output positions
-            adj_list (list list int): outn lists containing lists of ints < inn
-            bias_type (str):
-                'none': no bias is used
-                'c': a bias for each channel (same over output nodes)
-                'nc': a bias for each channel and output node.
-        """
-        super(FGL_node_first, self).__init__()
-        assert(bias_type in ['', 'c', 'nc'])
-        self.inc = inc
-        self.outc = outc
-        self.inn = inn
-        self.outn = outn
-        self.maxD = max(len(al) for al in adj_list)
-        mask = torch.zeros(outn, self.maxD).float()  # Binary mask
-        padded_adj_list = []
-        for nidx, al in enumerate(adj_list):
-            mask[nidx, :len(al)] = 1.0
-            padded_adj_list.append(al + [0 for i in range(self.maxD - len(al))])
-        mask = mask.unsqueeze(2)
-        self.register_buffer('mask', mask)
-
-        # Used as input to embedding matrix.
-        A = torch.tensor(padded_adj_list).long()
-        self.register_buffer('A', A)
-
-        # parameters
-        self.weight = nn.Parameter(0.2 * torch.randn(inc, outc).float())
-        if bias_type == '':
-            bias = torch.zeros(outc).float()
-            self.register_buffer('bias', bias)
-        elif bias_type == 'c':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc).float())
-        elif bias_type == 'nc':
-            self.bias = nn.Parameter(0.2 * torch.randn(outn, outc).float())
-        else:
-            raise NotImplementedError("Bias type {} not implemented".format(bias_type))
-
-    def forward(self, x):
-        # x: N, inn, inc
-        N = x.shape[0]
-        embedding_weight = x.permute(1, 0, 2).contiguous().view(self.inn, -1)
-        # embedding_weight = torch.reshape(x.permute(1, 0, 2), (self.inn, N * self.inc))
-        embedding_output = F.embedding(self.A, embedding_weight)  # outn, maxD, (N*inc)
-        masked_embedding_output = self.mask * embedding_output
-        pooled_masked_embedding_output = masked_embedding_output.view(self.outn, self.maxD, N, self.inc).sum(dim=1)  # outn, N, inc
-        almost_y = torch.bmm(pooled_masked_embedding_output, self.weight.unsqueeze(0).expand(self.outn, self.inc, self.outc))  # outn, N, outc
-        y = almost_y.permute(1, 0, 2).contiguous()
-        return y + self.bias  # N, outn, outc
+        y = self.func_map[self.op_order[0]](self, x)
+        y = self.func_map[self.op_order[1]](self, y)
+        y = self.func_map[self.op_order[2]](self, y)
+        return y + self.bias
 
 
 if __name__ == '__main__':
-    import pdb
+    # Code to profile FGL
+    import time
+    import itertools
 
-    def test_useless():
-        adj_list = [
-            [1],
-            [2],
-            [3],
-            [0],
-            [2, 3],
-        ]
-        A = torch.tensor([
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-            [1, 0, 0, 0],
-            [0, 0, 0.5, 0.5],
-        ])
-        fgl = FGL_useless(2, 4, 3, 5, adj_list)
-        x = torch.randn(8, 2, 4)
-        y = fgl(x)
-        for i in range(x.shape[0]):
-            output = y[i]  # outc, outn
-            correct = (A.float().mm(x[i].t()).mm(fgl.weight) - fgl.bias.t()).t()  # outc, outn
-            assert (output - correct).abs().mean().item() < 1e-6
-        print("Completed correctness test")
+    N = 32
+    nin = 32768
+    cin = 64
+    nout = 2 * 8192
+    cout = 128
+    adj_list = [[i] for i in range(nout)]
+    np.random.seed(1337)
+    for i in range(nout, nin):
+        parent = np.random.randint(0, nout)
+        if nin not in adj_list[parent]:  # Avoid duplicates.
+            adj_list[parent].append(i)
+    x = torch.randn(N, cin, nin).cuda()
 
-    def test_useless():
-        adj_list = [
-            [1],
-            [2],
-            [3],
-            [0],
-            [2, 3],
-        ]
-        A = torch.tensor([
-            [0, 1, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-            [1, 0, 0, 0],
-            [0, 0, 0.5, 0.5],
-        ])
-        fgl = FGL_useless(2, 4, 3, 5, adj_list)
-        x = torch.randn(8, 2, 4)
-        y = fgl(x)
-        for i in range(x.shape[0]):
-            output = y[i]  # outc, outn
-            correct = fgl.mask_weight * fgl.mask
-            correct = (A.float().mm(x[i].t()).mm(fgl.weight) - fgl.bias.t()).t()  # outc, outn
-            assert (output - correct).abs().mean().item() < 1e-6
-        print("Completed correctness test")
-
-    # test_useless()
-
-    def warm_up():
-        N = 32
-        nin = 32768
-        cin = 64
-        nout = 2 * 8192
-        cout = 128
-        adj_list = [[i] for i in range(nout)]
-        np.random.seed(1337)
-        for i in range(nin):
-            parent = np.random.randint(0, nout)
-            if nin not in adj_list[parent]:  # Avoid duplicates.
-                adj_list[parent].append(i)
+    def run(cin, nin, cout, nout, adj_list, x, return_profile, op_order='123', reduction='mean', bias_type='nc', optimization='none'):
+        k = "/".join([op_order, bias_type, reduction, optimization])
+        print("Starting {}".format(k))
         fgl = FGL(cin, nin, cout, nout, adj_list).cuda()
-        print("Occupancy = {}".format(fgl.occupancy))
-        x = torch.randn(N, cin, nin).cuda()
-        y = fgl(x)
-        x = torch.randn(N, cin, nin).cuda()
-        # with torch.autograd.profiler.profile(use_cuda=True) as prof:
-        y = fgl(x)
-        # print(prof)
-
-    def profiling_test(must_use_padded):
-        N = 32
-        nin = 32768
-        cin = 64
-        nout = 2 * 8192
-        cout = 128
-        adj_list = [[i] for i in range(nout)]
-        np.random.seed(1337)
-        for i in range(nin):
-            parent = np.random.randint(0, nout)
-            if nin not in adj_list[parent]:  # Avoid duplicates.
-                adj_list[parent].append(i)
-        fgl = FGL(cin, nin, cout, nout, adj_list, must_use_padded=must_use_padded).cuda()
-        print("Occupancy = {}".format(fgl.occupancy))
-        x = torch.randn(N, cin, nin).cuda()
-        y = fgl(x)
-        x = torch.randn(N, cin, nin).cuda()
         with torch.autograd.profiler.profile(use_cuda=True) as prof:
             y = fgl(x)
-        print(prof)
-        # pdb.set_trace()
-        # with torch.autograd.profiler.profile(use_cuda=True) as prof:
-        #     y.sum().backward()
-        # print(prof)
-    import time
+        return prof
 
-    warm_up()
-    warm_up()
-    warm_up()
-    warm_up()
+    op_orders = ["123", "132", "213", "231"]  # ["".join(x) for x in itertools.permutations(["1", "2", "3"], 3)]
+    bias_types = ["c"]  # ["", "c", "nc"]
+    reductions = ["mean", "max"]
+    optimizations = ["none", "tree", "packed0.3"]
+    # Warm up
+    run(cin, nin, cout, nout, adj_list, x, False)
+    run(cin, nin, cout, nout, adj_list, x, False)
+    # Start profiling
+    times = {}
+    profs = {}
+    all_combos = itertools.product(op_orders, bias_types, reductions, optimizations)
+    print("Profiling {} combinations".format(all_combos))
+    for (op_order, bias_type, reduction, optimization) in all_combos:
+        k = "/".join([op_order, bias_type, reduction, optimization])
+        # print("Starting {}".format(k))
+        tic = time.time()
+        profs[k] = run(cin, nin, cout, nout, adj_list, x, True, op_order=op_order, reduction=reduction, bias_type=bias_type, optimization=optimization)
+        times[k] = time.time() - tic
 
-    print("Using padded:")
-    start = time.time()
-    profiling_test(True)
-    padded_time = time.time() - start
+    for k, v in profs.items():
+        print("Prof {}".format(k))
+        print(v)
 
-    print("Using packed:")
-    start = time.time()
-    profiling_test(False)
-    packed_time = time.time() - start
-
-    print("Packed={} v/s Padded={}".format(packed_time, padded_time))
+    for k, v in times.items():
+        print("{}: {}s".format(k, v))
+    import pdb; pdb.set_trace()

@@ -6,7 +6,7 @@ from torch.nn.utils import weight_norm, spectral_norm
 
 
 class CC3D(nn.Module):
-    def __init__(self, volume, inc, outc, kernel, stride, padding, use_spectral_norm):
+    def __init__(self, volume, inc, outc, kernel, stride, padding, use_spectral_norm=False, use_weight_norm=False):
         super(CC3D, self).__init__()
         xgrid, ygrid, zgrid = np.meshgrid(np.linspace(-1, 1, volume[0]), np.linspace(-1, 1, volume[1]), np.linspace(-1, 1, volume[2]), indexing='ij')
         coords_ndarray = np.stack((xgrid, ygrid, zgrid), axis=0).astype('float32')
@@ -15,6 +15,8 @@ class CC3D(nn.Module):
         self.register_buffer('coords', coords)
         if use_spectral_norm:
             self.conv = spectral_norm(nn.Conv3d(inc + 3, outc, kernel, stride=stride, padding=padding))
+        elif use_weight_norm:
+            self.conv = weight_norm(nn.Conv3d(inc + 3, outc, kernel, stride=stride, padding=padding))
         else:
             self.conv = nn.Conv3d(inc + 3, outc, kernel, stride=stride, padding=padding)
         self.volume = volume
@@ -26,7 +28,7 @@ class CC3D(nn.Module):
 
 
 class CCT3D(nn.Module):
-    def __init__(self, volume, inc, outc, kernel, stride, padding, use_spectral_norm):
+    def __init__(self, volume, inc, outc, kernel, stride, padding, use_spectral_norm=False, use_weight_norm=False):
         super(CCT3D, self).__init__()
         xgrid, ygrid, zgrid = np.meshgrid(np.linspace(-1, 1, volume[0]), np.linspace(-1, 1, volume[1]), np.linspace(-1, 1, volume[2]), indexing='ij')
         coords_ndarray = np.stack((xgrid, ygrid, zgrid), axis=0).astype('float32')
@@ -35,6 +37,8 @@ class CCT3D(nn.Module):
         self.register_buffer('coords', coords)
         if use_spectral_norm:
             self.convt = spectral_norm(nn.ConvTranspose3d(inc + 3, outc, kernel, stride=stride, padding=padding))
+        elif use_weight_norm:
+            self.convt = weight_norm(nn.ConvTranspose3d(inc + 3, outc, kernel, stride=stride, padding=padding))
         else:
             self.convt = nn.ConvTranspose3d(inc + 3, outc, kernel, stride=stride, padding=padding)
 
@@ -47,7 +51,7 @@ class CCT3D(nn.Module):
 
 
 class ResidualBlock(nn.Module):  # Same for generator/discriminator
-    def __init__(self, volume, c, ks, use_spectral_norm):
+    def __init__(self, volume, c, ks, use_spectral_norm=False, use_weight_norm=False):
         super(ResidualBlock, self).__init__()
         self.c = c
         net = []
@@ -55,7 +59,7 @@ class ResidualBlock(nn.Module):  # Same for generator/discriminator
             net.extend([
                 nn.LeakyReLU(negative_slope=0.2),
                 nn.BatchNorm3d(c),
-                CC3D(volume, c, c, k, stride=1, padding=(k - 1) // 2, use_spectral_norm=use_spectral_norm),
+                CC3D(volume, c, c, k, stride=1, padding=(k - 1) // 2, use_spectral_norm=use_spectral_norm, use_weight_norm=use_weight_norm),
             ])
         self.net = nn.Sequential(*net)
 

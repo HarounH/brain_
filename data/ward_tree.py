@@ -7,9 +7,12 @@ import pickle
 import numpy as np
 import torch
 import heapq
-from collections import defaultdict
+from collections import defaultdict, deque
 import scipy.sparse as scsp
 import torch.sparse as tsp
+from data.new_agglo import (
+    _hc_cut,
+)
 
 
 class WardNode():
@@ -27,6 +30,79 @@ class WardNode():
 
 
 class WardTree():
+    """
+        Takes in a ward tree object of class data.new_agglo.AgglomerativeClustering
+    """
+    def __init__(self, ward):
+        # ward: str to pickle of AgglomerativeClustering or AgglomerativeClustering obj
+        if isinstance(ward, str):
+            with open(ward, "rb") as f:
+                ward = pickle.load(f)
+        self.ward = ward  # Dont need to store this.
+        self.n_samples = ward.children_.shape[0] + 1
+
+    def cut(self, cutsize):
+        return _hc_cut(cutsize, self.ward.children_, self.ward.n_leaves_)  # Label positions according to cut of cutsize
+
+    def get_leaves(self):
+        return list(range(self.ward.n_leaves_))
+
+    def get_level(self, level_size):
+        # Similar to new_agglo._hc_cut, but we dont assign labels to the leaf nodes.
+        children = self.ward.children_
+        n_leaves = self.ward.n_leaves_
+        # We maintain a PQ, using the negative of the node idx since heapq is a min-PQ
+        level = [-max(children[-1]) - 1]
+        for i in range(level_size - 1):
+            new_children = children[- level[0] - n_leaves]
+            heapq.heappush(level, -new_children[0])
+            heapq.heappushpop(level, -new_children[1])
+        return [-n for n in level]
+
+    def get_adj(self, node, destination_nodes, children, n_leaves, dest=None):
+        if dest is None:
+            dest = {v: i for i, v in enumerate(destination_nodes)}
+        # Get adjacency from node to dest
+        adj = []
+        # if node-> destination_nodes[idx] then append idx to adj_list[-1]...
+        next_nodes = deque([node])
+        l = 1  # length of next_nodes
+        while l > 0:
+            next_node = next_nodes.pop()
+            l -= 1
+            if next_node in dest:
+                adj.append(dest[next_node])
+            else:
+                next_nodes.append(children[next_node - n_leaves][0])
+                next_nodes.append(children[next_node - n_leaves][1])
+                l += 2
+        return adj
+
+    def get_level_and_adjacency(self, level_size, destination_nodes, n_regions=32):
+        """
+            Finds a level of size level_size, and then returns an adjacency list from the new level to destination-nodes
+            Returns:
+                level_nodes: indices associated with nodes at new level
+                regions: array containing region id of each level node
+                adj_list: Adjacency list from level_nodes to destination_nodes... length = level_size
+        """
+        level_nodes = self.get_level(level_size)
+        adj_list = []
+        children = self.ward.children_
+        n_leaves = self.ward.n_leaves_
+        dest = {v: i for i, v in enumerate(destination_nodes)}
+        for node in level_nodes:
+            adj_list.append(self.get_adj(node, destination_nodes, children, n_leaves, dest=dest))
+
+        region_nodes = self.get_level(n_regions)
+        regions = np.zeros(level_size)
+        level_dest = {v: i for i, v in enumerate(level_nodes)}
+        for i, rnode in enumerate(region_nodes):
+            regions[self.get_adj(rnode, level_nodes, children, n_leaves, dest=level_dest)] = i
+        return level_nodes, regions, adj_list
+
+
+class WardTree_deprecated():
     def __init__(self, ward):
         # import pdb; pdb.set_trace()
         if isinstance(ward, str):

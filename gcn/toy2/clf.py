@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import gcn.modules.fgl as fgl
-import gcn.toy.dataset as dset
+import gcn.toy2.dataset as dset
 import torch.optim as optim
 import scipy.sparse as sp
 import utils.utils as utils
@@ -26,7 +26,7 @@ class FGLNet(nn.Module):
         )  # Softmax on top
 
     def forward(self, x):
-        cur = x
+        cur = x  # x: N, 784, 3
         cur = self.net(cur).view(x.shape[0], -1)
         return self.linear(cur)
 
@@ -103,7 +103,7 @@ if __name__ == '__main__':
     args.dataparallel = args.dataparallel and args.cuda
 
     if args.output == "":
-        args.output = os.path.join("gcn/toy/outputs", args.model_type, "ic{}dA{}s{}".format(args.intermediate_channel, args.density_A, args.seed), os.path.basename(args.datafile).replace(".npz", ".chk"))
+        args.output = os.path.join("gcn/toy2/outputs", args.model_type, "ic{}dA{}s{}".format(args.intermediate_channel, args.density_A, args.seed), os.path.basename(args.datafile).replace(".npz", ".chk"))
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     print("Writing checkpoint to {}".format(args.output))
@@ -170,7 +170,7 @@ if __name__ == '__main__':
             accs.append(acc)
             losses.append(loss.item())
         print("[{}/{}: {}s] loss={} acc={}".format(eidx, args.epochs, time.time() - start, np.mean(losses), np.mean(accs)))
-        if eidx % 10 == 0:
+        if eidx % 1 == 0:
             test(model, test_loader, "val {}/{}".format(eidx, args.epochs))
     checkpoint = {'model': model.state_dict(), 'args': args.__dict__}
     torch.save(

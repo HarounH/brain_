@@ -30,7 +30,6 @@ from .blocks import (
 import conv.modules.generators as generators
 import conv.modules.discriminators as discriminators
 import conv.modules.gps as gps
-from data.constants import brain_mask
 
 # X: N, 53, 64, 52
 # Skeleton
@@ -101,10 +100,10 @@ if __name__ == '__main__':
         3: [6, 7],
         4: [8, 9],
     }
-
+    from data import constants
     gan = SHACGAN(
         args,
-        gen_mask=constants.brain_mask_tensor,
+        gen_mask=constants.downsampled_brain_mask_tensor,
         gen_version='0',
         disc_version='0',
         gradient_penalty='dragan',
