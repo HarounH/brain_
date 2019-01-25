@@ -5,21 +5,88 @@ import pickle
 import json
 import shutil
 import numpy as np
+import matplotlib
+matplotlib.use("agg")
 import matplotlib.pyplot as plt
 import time
-plt.switch_backend('agg')
+import math
 from nilearn import plotting
 import nibabel
 from nilearn.input_data import NiftiMasker
 import nilearn.masking as masking
 from nilearn.image import load_img, resample_img, math_img
 import torch
+from torch import nn
 from torch.utils.data import SubsetRandomSampler
 from collections import defaultdict
 from nilearn.datasets import load_mni152_template
 from data import constants
 import scipy.sparse as scsp
 import torch.sparse as tsp
+
+
+def get_3d_convolution_adjacency(input_volume, kernel_sizes, strides, paddings):
+    # input_volume: an (3) dimensional volume, represented as a list.
+    # input_volume[i][j][k] = -1 if its not a valid location
+    # input_volume[i][j][k] = i if its a valid location
+    # output_volume[i'][j'][k'] follows the same convention.
+    # adjacency is from valid positions to valid positions
+    if not(isinstance(kernel_sizes, list)):
+        kernel_sizes = [kernel_sizes, kernel_sizes, kernel_sizes]
+    if not(isinstance(strides, list)):
+        strides = [strides, strides, strides]
+    if not(isinstance(paddings, list)):
+        paddings = [paddings, paddings, paddings]
+
+    inD = len(input_volume)
+    inH = len(input_volume[0])
+    inW = len(input_volume[0][0])
+    # Compute new I, J, K
+    outD = math.floor(1 + (inD + 2 * paddings[0] - kernel_sizes[0]) / strides[0])
+    outH = math.floor(1 + (inH + 2 * paddings[1] - kernel_sizes[1]) / strides[1])
+    outW = math.floor(1 + (inW + 2 * paddings[2] - kernel_sizes[2]) / strides[2])
+
+    output_volume = [[[-1 for _ in range(outW)] for _ in range(outH)] for _ in range(outD)]
+
+    adjacency = []
+    for d in range(outD):
+        for h in range(outH):
+            for w in range(outW):
+                dependecies = []
+                mind_ = max(0, d * strides[0] - kernel_sizes[0] // 2)
+                maxd_ = min(inD, 1 + d * strides[0] + kernel_sizes[0] // 2)
+                minh_ = max(0, h * strides[1] - kernel_sizes[1] // 2)
+                maxh_ = min(inH, 1 + h * strides[1] + kernel_sizes[1] // 2)
+                minw_ = max(0, w * strides[2] - kernel_sizes[2] // 2)
+                maxw_ = min(inW, 1 + w * strides[2] + kernel_sizes[2] // 2)
+                for d_ in range(mind_, maxd_):
+                    for h_ in range(minh_, maxh_):
+                        for w_ in range(minw_, maxw_):
+                            if input_volume[d_][h_][w_] != -1:
+                                dependecies.append(input_volume[d_][h_][w_])
+                if len(dependecies) > 0:
+                    output_volume[d][h][w] = len(adjacency)
+                    adjacency.append(dependecies)
+    return output_volume, adjacency
+
+
+def random_tree_adjacency_list(inn, outn):
+    adj = [[] for _ in range(outn)]
+    for i in range(inn):
+        j = np.random.randint(0, outn)
+        adj[j].append(i)
+    return adj
+
+
+def make_checkpoint(model, optimizer, epoch):
+    chk = {}
+    if isinstance(model, nn.DataParallel):
+        chk['model'] = model.module.state_dict()
+    else:
+        chk['model'] = model.state_dict()
+    chk['optimizer'] = optimizer.state_dict()
+    chk['epoch'] = epoch
+    return chk
 
 
 def kfold_list_split(ls, k):

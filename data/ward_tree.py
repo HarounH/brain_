@@ -86,6 +86,9 @@ class WardTree():
                 regions: array containing region id of each level node
                 adj_list: Adjacency list from level_nodes to destination_nodes... length = level_size
         """
+        if (n_regions >= level_size):
+            print("n_regions={} >= level_size={} is not allowed. setting n_regions < level_size".format(n_regions, level_size))
+            n_regions = level_size - 1
         level_nodes = self.get_level(level_size)
         adj_list = []
         children = self.ward.children_
@@ -100,6 +103,41 @@ class WardTree():
         for i, rnode in enumerate(region_nodes):
             regions[self.get_adj(rnode, level_nodes, children, n_leaves, dest=level_dest)] = i
         return level_nodes, regions, adj_list
+
+    def get_parents(self, nodes):
+        # Nodes: list-like
+        children = self.ward.children_
+        n_leaves = self.ward.n_leaves_
+        parents = {k: None for k in nodes}
+        for i in range(len(children)):
+            for j in range(2):
+                candidate = children[i][j]
+                if candidate in parents:
+                    parents[candidate] = i + n_leaves
+        return [parents[k] for k in nodes]
+
+    def get_self_adj(self, nodes, upward_hops=2):
+        """
+        Returns an adjacency by going up and coming back down.
+        """
+        ancestors = [[] for n in nodes]
+        cur_nodes = nodes
+        for i in range(upward_hops):
+            for i in range(len(cur_nodes)):
+                ancestors[i].append(cur_nodes[i])
+            cur_nodes = self.get_parents(cur_nodes)
+        # Ancestors is now ready. 2 nodes are connected if they share an ancestor
+        ancestor2node_idx = defaultdict(lambda: [])
+        for i in range(len(nodes)):
+            for anc in ancestors[i]:
+                ancestor2node_idx[anc].append(i)
+        adj_list = [[] for n in nodes]
+        for anc, nbr in ancestor2node_idx.items():
+            for i in nbr:
+                for j in nbr:
+                    if j not in adj_list[i]:
+                        adj_list[i].append(j)
+        return adj_list
 
 
 class WardTree_deprecated():

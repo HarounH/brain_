@@ -26,7 +26,7 @@ import torch.utils.data
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from tensorboardX import SummaryWriter
+import torch.optim.lr_scheduler as lr_scheduler
 from gcn.modules import (
     classifiers,
 )
@@ -44,6 +44,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("study", type=str, choices=constants.nv_ids.keys(), help="dataset to use")  # noqa
     parser.add_argument("-ok", "--outer_folds", type=int, metavar='<int>', default=10, help="Number of outer folds")  # noqa
+    parser.add_argument("-df", "--outer_frac", type=float, metavar='<int>', default=0.3, help="Fraction of data to use as test in each outer fold")  # noqa
     parser.add_argument("-ds", "--dset_seed", type=int, metavar='<int>', default=1337, help="Seed used for dataset")  # noqa
 
     # Data parameters... don't mess with this.
@@ -69,9 +70,8 @@ def get_args():
     parser.add_argument("-wd", "--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=0, help='Weight decay')  # noqa
 
     # Choose the model
-    parser.add_argument('-ct', "--classifier_type", type=str, default='fc', choices=classifiers.versions.keys(), help="What classifier version to use")
+    parser.add_argument('-ct', "--classifier_type", type=str, default='fc', help="What classifier version to use",)  # choices=classifiers.versions.keys(),)
     parser.add_argument('-nr', '--nregions', type=int, default=8, help='How many regions to consider if classifier type is r0')  # noqa
-    parser.add_argument("--no_opt", dest="no_opt", default=False, action="store_true", help="Disable packing/padding optimization")  # noqa
 
     args = parser.parse_args()
 
@@ -86,6 +86,7 @@ def get_args():
     args.base_output = os.path.join(args.base_output, args.classifier_type)
     if args.debug:
         args.run_code = "debug"
+    os.makedirs(args.base_output, exist_ok=True)
 
     if len(args.run_code) == 0:
         # Generate a run code by counting number of directories in oututs
@@ -110,11 +111,9 @@ def evaluate(args, model, loader):
     with torch.no_grad():
         for bidx, (x, _, _, cvec) in enumerate(loader):
             N = x.shape[0]
-            if args.cuda and not(args.dataparallel):
+            if args.cuda:
                 # If dataparallel, then nn.DataParallel will automatically send stuff to the correct device
                 x = x.cuda()
-                cvec = cvec.cuda()
-            elif args.cuda:
                 cvec = cvec.cuda()
             cpred = model(x)
             metrics['loss'] += N * F.cross_entropy(cpred, cvec).item()
@@ -129,7 +128,7 @@ def evaluate(args, model, loader):
     return metrics
 
 
-def train_one_epoch(args, model, optimizer, loader):
+def train_one_epoch(args, model, optimizer, loader, tobreak=False):
     nclasses = len(args.meta['c2i'])
     metrics = {
         'loss': 0.0,
@@ -139,22 +138,22 @@ def train_one_epoch(args, model, optimizer, loader):
     cpreds = []
     for bidx, (x, _, _, cvec) in enumerate(loader):
         N = x.shape[0]
-        if args.cuda and not(args.dataparallel):
+        if args.cuda:
             # If dataparallel, then nn.DataParallel will automatically send stuff to the correct device
             x = x.cuda()
-            cvec = cvec.cuda()
-        elif args.cuda:
             cvec = cvec.cuda()
         cpred = model(x)
         loss = F.cross_entropy(cpred, cvec)
         optimizer.zero_grad()
         loss.backward()
+        if tobreak:
+            import pdb; pdb.set_trace()
         optimizer.step()
         metrics['loss'] += N * loss.item()
         ctrues.extend(cvec.cpu().tolist())
         cpreds.extend(torch.argmax(cpred.detach(), dim=1).cpu().tolist())
     metrics['loss'] /= len(loader)
-    metrics['cm'] = sk_metrics.confusion_matrix(ctrues, cpreds, labels=list(range(nclasses)))
+    metrics['cm'] = sk_metrics.confusion_matrix(ctrues, cpreds, labels=list(range(nclasses))).astype(np.float32)
     metrics['accuracy'] = sk_metrics.accuracy_score(ctrues, cpreds)
     metrics['precision'], metrics['recall'], metrics['f1'], metrics['support'] = sk_metrics.precision_recall_fscore_support(ctrues, cpreds, labels=list(range(nclasses)))
     metrics['time'] = time.time() - tic
@@ -175,7 +174,6 @@ def run_single_split(args, split, output_dir="."):
     train_loader = torch.utils.data.DataLoader(train_dset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 
     model = classifiers.versions[args.classifier_type](args, loadable_state_dict=None)
-
     if args.cuda:
         model = model.cuda()
     if args.dataparallel:
@@ -193,7 +191,7 @@ def run_single_split(args, split, output_dir="."):
     if classifiers.scheduled[args.classifier_type]:
         scheduler = lr_scheduler.MultiStepLR(
             optimizer,
-            milestones=[5, 25],  # Start at 0.01 -> 0.001, -> 0.0001
+            milestones=[5, 25],  # Start at 0.001 -> 0.0001, -> 0.00001
             gamma=0.1,
         )
     else:
@@ -205,7 +203,7 @@ def run_single_split(args, split, output_dir="."):
         epoch_tic = time.time()
         if scheduler is not None:
             scheduler.step()
-        train_metrics = train_one_epoch(args, model, optimizer, train_loader)
+        train_metrics = train_one_epoch(args, model, optimizer, train_loader)  # , tobreak=(epoch==(0)))
         train_metrics_per_epoch.append(train_metrics)
 
         test_metrics = evaluate(args, model, test_loader)
@@ -213,9 +211,12 @@ def run_single_split(args, split, output_dir="."):
 
         is_best = (best_test_metrics is None) or test_metrics['accuracy'] >= best_test_metrics['accuracy']
         if is_best:
-            chk = make_checkpoint(model, optimizer, epoch)
-            torch.save(chk, os.path.join(cv_output_dir, "best.checkpoint"))
+            chk = utils.make_checkpoint(model, optimizer, epoch)
+            torch.save(chk, os.path.join(output_dir, "best.checkpoint"))
             best_test_metrics = test_metrics
+        chk = utils.make_checkpoint(model, optimizer, epoch)
+        torch.save(chk, os.path.join(output_dir, "last.checkpoint"))
+        # breaking logic: Not yet implemented
         # new_loss = train_metrics['loss']
         # if min_loss is None:
         #     min_loss = new_loss
@@ -229,8 +230,8 @@ def run_single_split(args, split, output_dir="."):
         #     ((abs(new_loss - min_loss) < args.loss_thr))
         # )
         # old_loss = new_loss
-        if to_break:
-            break
+        # if to_break:
+        #     break
         print(
             "[Epoch {}/{}] train-loss={:.4f} train-acc={:.4f} test-acc={:.4f} time={:.2f}".format(
                 epoch,
@@ -242,26 +243,36 @@ def run_single_split(args, split, output_dir="."):
             )
         )
 
+    torch.save(train_metrics_per_epoch, os.path.join(output_dir, "train_metrics_per_epoch.checkpoint"))
+    torch.save(test_metrics_per_epoch, os.path.join(output_dir, "test_metrics_per_epoch.checkpoint"))
+    torch.save(best_test_metrics, os.path.join(output_dir, "best_test_metrics.checkpoint"))
+
     return train_metrics_per_epoch, test_metrics_per_epoch, best_test_metrics
 
 
 if __name__ == '__main__':
     args = get_args()
+    print("Arguments parsed")
+    args = classifiers.parse_model_specs(args)
+    print("Model specs parsed")
     splits, meta = dataset.get_splits(
         args.study,
         args.outer_folds,
         1,
         args.dset_seed,
+        random_outer=args.outer_frac,  # test, always. Not CV
         random_inner=0.0,  # No validation.
         masked=classifiers.masked[args.classifier_type],
         downsampled=args.downsampled,
         normalization=args.normalization,
         not_lazy=args.not_lazy
     )
+    print("Obtained splits")
     args.meta = meta
     args.wtree = constants.get_wtree()
     # Dump args to args.base_output/information.json
     torch.save(args, os.path.join(args.base_output, "args.checkpoint"))
+    print("Dumped args")
     train_metrics_per_epoch_per_split = {}
     test_metrics_per_epoch_per_split = {}
     best_metrics_per_split = {}
@@ -269,6 +280,7 @@ if __name__ == '__main__':
     for split_idx, split in enumerate(splits):
         start = time.time()
         split_dir = os.path.join(args.base_output, "outer_split{}".format(split_idx))
+        os.makedirs(split_dir, exist_ok=True)
         (
             train_metrics_per_epoch_per_split[split_idx],
             test_metrics_per_epoch_per_split[split_idx],
@@ -306,6 +318,6 @@ if __name__ == '__main__':
         for metric_name in best_metrics_per_split[0].keys()
     }
     torch.save(average_best_test_metrics, os.path.join(args.base_output, "best_metrics.checkpoint"))
-    print('Average last accuracy={:.4f}'.format(average_best_test_metrics["accuracy"]))
+    print('Average best accuracy={:.4f}'.format(average_best_test_metrics["accuracy"]))
 
     print("Total run time: {}".format(time.time() - tic))

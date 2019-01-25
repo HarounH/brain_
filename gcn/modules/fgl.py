@@ -85,12 +85,12 @@ class FGL(nn.Module):
 
         # bias is easy
         if bias_type == '':
-            bias = torch.zeros(outc).float()
+            bias = torch.zeros(1).float()
             self.register_buffer('bias', bias)
         elif bias_type == 'c':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc).float())
+            self.bias = nn.Parameter(0.2 * torch.randn(1, outc, 1).float())
         elif bias_type == 'nc':
-            self.bias = nn.Parameter(0.2 * torch.randn(outc, outn).float())
+            self.bias = nn.Parameter(0.2 * torch.randn(1, outc, outn).float())
         else:
             raise NotImplementedError("Bias type {} not implemented".format(bias_type))
 
@@ -103,10 +103,62 @@ class FGL(nn.Module):
             # Hallelujah PyTorch 1.0!
             return torch.einsum("...ij,ik->...kj", x, self.ft_weight).contiguous()
 
+
+        """
+        Note on initialization of nf_weight:
+            nf_weight is used in a hadamard product, making it a fairly non-standard
+            weight in deep learning.
+            As a consequence, its initialization is kinda non-trivial.
+            Instead, a good way to think about it is that cdot(x, nf_weight)
+            is actually meant to be fused with a reduction operation.
+            y_i = reduce([x_j | j in Nbr(y_i)], [w_j | j in Nbr(y_i)]))
+            for reduction = sum,
+                var(y_i) = |Nbr(y_i)| E[x_i^2] var(w_j) --- forward pass, anyway
+                the backwardpass would be similar, but using |Par(x_j)| instead.
+
+                You get the drift? (super handwavy because its not the focus of this at all)
+                we should initialize var(w_j) such that it satisfies:
+                    |Nbr(y_i)|var(w_j) = 1 forall i in Par(x_j)
+                    |Par(x_j)|var(w_j) = 1
+                Like good old glorot, we're gonna use a happy middle ground.
+                    var(w_j) = frac{1 + Par(x_j)}{Par(x_j) + sum_{i in Par(x_j)} Nbr(y_i)}
+
+                How do we do this?
+                    w_j ~ [-U, U]
+                        (2U)**2 / 12 = frac{1 + Par(x_j)}{Par(x_j) + sum_{i in Par(x_j)} Nbr(y_i)}
+                        U = sqrt(3 * frac{1 + Par(x_j)}{Par(x_j) + sum_{i in Par(x_j)} Nbr(y_i)})
+                        # Looks similar to kaiming_uniform_, yeah?
+                        Notice that instead of the usual 6,
+                        we have 3 * frac{1 + Par(x_j)} ... Par(x_j) = 1 in a tree.
+
+                        sqrt(3 * frac{1 + Par(x_j)}{Par(x_j) + sum_{i in Par(x_j)} Nbr(y_i)})
+                    => w_j ~ 2 * ([0, 1] - 0.5) * U
+            For a tree, this is nice because |Par(x_j)| = 1 ...
+            For non-linear activations, we'll need to mess with the equation
+
+            For nf_weight, channel counts shouldn't matter because thats taken care of by ft_weight
+        """
+        adjT = utils.transpose_adj_list(self.outn, self.inn, adj_list)
+        numerators = []
+        denominators = []
+        for j in range(inn):
+            numerators.append(1 + len(adjT[j]))
+            temp = len(adjT[j])
+            for parent in adjT[j]:
+                temp += len(adj_list[parent])
+            denominators.append(temp)
+        numerators = torch.tensor(numerators).float()
+        denominators = torch.tensor(denominators).float()
+        U = torch.sqrt(3 * numerators / denominators)
         # Node/Feature weight.
         c_ = inc if op_order.find("2") > op_order.find("1") else outc
         n_ = inn if op_order.find("3") > op_order.find("1") else outn
-        self.nf_weight = nn.Parameter(torch.randn(c_, n_))
+
+        if n_ == inn:
+            print("Using corrected initialization")
+            self.nf_weight = nn.Parameter(2 * (-0.5 + torch.rand(c_, n_)) * U)
+        else:  # Shouldn't have to use
+            self.nf_weight = nn.Parameter(0.2 * 2 * (-0.5 + torch.rand(c_, n_)))
 
         def nf_transform_(self, x):
             # x: N, c_, n_
@@ -121,7 +173,7 @@ class FGL(nn.Module):
         # Reduction
         if optimization == "tree":
             print("FGL: Using tree optimization")
-            indices = torch.tensor(utils.transpose_adj_list(self.outn, self.inn, adj_list)).long().t().unsqueeze(0)
+            indices = torch.tensor(adjT).long().t().unsqueeze(0)
             self.register_buffer('indices', indices)
 
             # Hallelujah torch-scatter
@@ -151,7 +203,6 @@ class FGL(nn.Module):
             A = torch.tensor(padded_adj_list).long()  # N, T
             self.density = mask.sum().item() / np.prod(mask.shape)
             self.total_length = self.lengths.sum().item()
-
             if (optimization != "none") and (self.density > float(optimization[6:])):
                 print("FGL: Using padded variant: density={}".format(self.density))
                 self.register_buffer('A', A)
@@ -176,6 +227,9 @@ class FGL(nn.Module):
                             pooled_masked_embo = pooled_masked_embo / self.lengths_f32
                     return pooled_masked_embo.t().view(N, c, -1).contiguous()
                 self.func_map["3"] = reduction_
+                mask = mask.unsqueeze(2)
+                self.register_buffer('mask', mask)
+
             else:
                 print("FGL: Using packed variant: density={}".format(self.density))
 
@@ -225,6 +279,19 @@ class FGL(nn.Module):
         return y + self.bias
 
 
+def make_weight_normed_FGL(*args, **kwargs):
+    nfdim = kwargs['nfdim'] if 'nfdim' in kwargs else 1
+    return weight_norm(
+        weight_norm(
+            FGL(*args, **kwargs),
+            name='ft_weight',
+            dim=1,
+        ),
+        name='nf_weight',
+        dim=nfdim,
+    )
+
+
 if __name__ == '__main__':
     # Code to profile FGL
     import time
@@ -235,12 +302,18 @@ if __name__ == '__main__':
     cin = 64
     nout = 2 * 8192
     cout = 128
+
+
     adj_list = [[i] for i in range(nout)]
     np.random.seed(1337)
     for i in range(nout, nin):
         parent = np.random.randint(0, nout)
         if nin not in adj_list[parent]:  # Avoid duplicates.
             adj_list[parent].append(i)
+
+    # Uncomment the next line to do upsampling test
+    adj_list, nin, cin, nout, cout = utils.transpose_adj_list(nout, nin, adj_list), nout, cout, nin, cin
+
     x = torch.randn(N, cin, nin).cuda()
 
     def run(cin, nin, cout, nout, adj_list, x, return_profile, op_order='123', reduction='mean', bias_type='nc', optimization='none'):

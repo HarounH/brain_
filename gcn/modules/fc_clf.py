@@ -34,6 +34,35 @@ class Classifier(nn.Module):
         return self.net(x)
 
 
+class Linear(nn.Module):
+    def __init__(self, args, activation_layer_maker=lambda i: nn.Tanh, loadable_state_dict=None, downsampled=False):
+        """
+            args
+            sizes: list int
+            activation_layer_maker: int (op #) -> (fn: None -> nn.Module)
+        """
+        super().__init__()
+        self.args = args
+        if downsampled:
+            in_features = constants.downsampled_masked_nnz
+        else:
+            in_features = constants.original_masked_nnz
+        net = []
+        net.append(weight_norm(nn.Linear(int(in_features), 128)))
+        if args.non_linear:
+            net.append(nn.Tanh())
+        net.append(weight_norm(nn.Linear(128, len(args.meta['c2i']))))
+        self.net = nn.Sequential(
+            *(net)
+        )
+        if loadable_state_dict is not None:
+            self.load_state_dict(loadable_state_dict)
+
+    def forward(self, x):
+        # x: N, self.net[0].in_features
+        return self.net(x)
+
+
 class DimensionReduced(nn.Module):
     def __init__(self, args, activation_layer_maker=lambda i: nn.Tanh, loadable_state_dict=None, downsampled=False):
         """

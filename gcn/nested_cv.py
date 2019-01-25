@@ -22,7 +22,7 @@ import torch.utils.data
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from tensorboardX import SummaryWriter
+import torch.optim.lr_scheduler as lr_scheduler
 from gcn.modules import (
     classifiers,
 )
@@ -164,17 +164,6 @@ def validation_improvement(new_val_metrics, old_val_metrics):
     return (new_val_metrics['accuracy'] > old_val_metrics['accuracy']) or (new_val_metrics['loss'] < old_val_metrics['loss'])
 
 
-def make_checkpoint(model, optimizer, epoch):
-    chk = {}
-    if isinstance(model, nn.DataParallel):
-        chk['model'] = model.module.state_dict()
-    else:
-        chk['model'] = model.state_dict()
-    chk['optimizer'] = optimizer.state_dict()
-    chk['epoch'] = epoch
-    return chk
-
-
 def single_split_run_with_patience_stopping(args, split, output_dir=".", patience=3):
     test_dset = split['test']
     if args.debug:
@@ -248,7 +237,7 @@ def single_split_run_with_patience_stopping(args, split, output_dir=".", patienc
                 # Save checkpoint.
                 is_best = (best_val_metrics_per_cv[cv_idx] is None) or val_metrics['accuracy'] >= best_val_metrics_per_cv[cv_idx]['accuracy']
                 if is_best:
-                    chk = make_checkpoint(model, optimizer, epoch)
+                    chk = utils.make_checkpoint(model, optimizer, epoch)
                     torch.save(chk, os.path.join(cv_output_dir, "best.checkpoint"))
                     best_train_metrics_per_cv[cv_idx] = train_metrics
                     best_val_metrics_per_cv[cv_idx] = val_metrics

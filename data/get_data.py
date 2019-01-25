@@ -19,7 +19,7 @@ import copy
 from nilearn.datasets import load_mni152_template, load_mni152_brain_mask
 from nilearn.image import load_img, resample_img
 import time
-from data.constants import nv_ids, hcp_subject_list, brain_mask
+from data.constants import nv_ids, hcp_subject_list  # , brain_mask
 
 
 def get_range(image_file_list, dim=3):

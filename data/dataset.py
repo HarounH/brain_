@@ -234,7 +234,7 @@ def get_dataloaders(studies, subject_split, debug, batch_size, num_workers, mask
     return training_datasets, testing_datasets, meta, train_loaders, test_loaders
 
 
-def random_inner_splits(ls, k, frac):
+def random_splits(ls, k, frac):
     # Split ls k times, with each split being random
     lsls = []
     for i in range(k):
@@ -243,6 +243,7 @@ def random_inner_splits(ls, k, frac):
         lsls.append((ls[:start] + ls[end:], ls[start:end]))
     return lsls
 
+
 """
 For good experimentation, we need to do:
 for (train_val, test) in comprehensive_splits_of_full_data:
@@ -250,10 +251,12 @@ for (train_val, test) in comprehensive_splits_of_full_data:
         fit on train such that val acc is maximized (early stopping)
         measure acc on test
 """
-def get_splits(study, outer_k, inner_k, seed, random_inner=0.2, masked=False, downsampled=False, normalization='none', not_lazy=False):
+def get_splits(study, outer_k, inner_k, seed, random_outer=None, random_inner=0.2, masked=False, downsampled=False, normalization='none', not_lazy=False):
     # if random_inner is a float, that much fraction is used for validation,
     # if its None, then inner_k equal splits are made.
-    assert(outer_k > 1 and inner_k > 1)
+    # If random_outer is None, then mutually exclusive outer_k splits are made.
+    # If random_outer is a float, then outer_k random outer splits are made.
+    # assert(outer_k > 1 and inner_k > 1)
     if not(downsampled):
         dataframe_csv_file = original_dataframe_csv_file
         statistics_pkl = original_statistics_pkl
@@ -311,14 +314,17 @@ def get_splits(study, outer_k, inner_k, seed, random_inner=0.2, masked=False, do
 
     np.random.seed(seed)  # Ensures same split.
     subjects = np.random.permutation(df.subject.unique().tolist()).tolist()
-    outer_subject_splits = kfold_list_split(subjects, outer_k)
+    if random_outer is None:
+        outer_subject_splits = kfold_list_split(subjects, outer_k)
+    else:
+        outer_subject_splits = random_splits(subjects, outer_k, random_outer)
     subject_splits = []
     splits = []
     for (train_val_subjects, test_subjects) in outer_subject_splits:
         if random_inner is None:
             inner_subject_splits = kfold_list_split(train_val_subjects, inner_k)
         else:
-            inner_subject_splits = random_inner_splits(train_val_subjects, inner_k, random_inner)
+            inner_subject_splits = random_splits(train_val_subjects, inner_k, random_inner)
         test_dset = subject_list_to_dataset(test_subjects)
         inner_dsets  = []
         for (train_subjects, val_subjects) in inner_subject_splits:
