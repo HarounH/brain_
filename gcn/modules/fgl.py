@@ -22,11 +22,11 @@ import utils.utils as utils
 import torch_scatter
 
 
-DENSITY_THRESHOLD = 0.25  # If sparse adjacency matrix, A, is less occupied than this, then packed tensors are used instead of padded for embedding (which is the bottleneck)
+DENSITY_THRESHOLD = 1.0  # If sparse adjacency matrix, A, is less occupied than this, then packed tensors are used instead of padded for embedding (which is the bottleneck)
 
 
 class FGL(nn.Module):
-    def __init__(self, inc, inn, outc, outn, adj_list, op_order='132', reduction='max', bias_type='nc', optimization='packed0.3'):
+    def __init__(self, inc, inn, outc, outn, adj_list, op_order='132', reduction='max', bias_type='nc', optimization='packed0.3', initialization='rand'):
         """
             Does three things:
                 1. Node/Feature weights: parameter of size (n * c)
@@ -66,6 +66,9 @@ class FGL(nn.Module):
                         If the density of A is greater than the number specified (if no number, then a default is used),
                         then, a packed representation is used instead of padded.
                         For brain-decoding, A usually has a density < 25%, so this can speed up the embedding stage a LOT!
+                initialization (str): determines how to initialize nf_weight
+                    'rand': Just does random initialization
+                    'eq': Does equal values within input group.
         """
         super().__init__()
         assert(len(op_order) == 3)
@@ -82,7 +85,6 @@ class FGL(nn.Module):
         self.register_buffer('lengths_f32', lengths_f32)
         self.maxD = lengths.max().item()
         self.op_order = op_order
-
         # bias is easy
         if bias_type == '':
             bias = torch.zeros(1).float()
@@ -102,7 +104,6 @@ class FGL(nn.Module):
             # output: N, outc, *
             # Hallelujah PyTorch 1.0!
             return torch.einsum("...ij,ik->...kj", x, self.ft_weight).contiguous()
-
 
         """
         Note on initialization of nf_weight:
@@ -154,11 +155,27 @@ class FGL(nn.Module):
         c_ = inc if op_order.find("2") > op_order.find("1") else outc
         n_ = inn if op_order.find("3") > op_order.find("1") else outn
 
-        if n_ == inn:
-            print("Using corrected initialization")
-            self.nf_weight = nn.Parameter(2 * (-0.5 + torch.rand(c_, n_)) * U)
-        else:  # Shouldn't have to use
-            self.nf_weight = nn.Parameter(0.2 * 2 * (-0.5 + torch.rand(c_, n_)))
+        if initialization == 'rand':
+            if n_ == inn:
+                print("Using corrected initialization")
+                self.nf_weight = nn.Parameter(2 * (-0.5 + torch.rand(c_, n_)) * U)
+            else:  # Shouldn't have to use - unless we do reduction before weighting.
+                self.nf_weight = nn.Parameter(0.2 * 2 * (-0.5 + torch.rand(c_, n_)))
+        elif initialization == 'eq':
+            assert(n_ == inn)
+            inds = torch.tensor(adjT).long().squeeze()
+            gather_inds = inds.unsqueeze(0).expand(c_, n_)
+            parentU = torch.zeros(outn)
+            torch_scatter.scatter_max(U, inds, out=parentU)
+            parent_weight = 2 * (-0.5 + torch.rand(c_, outn)) * parentU
+            print(inds.shape)
+            print(parent_weight.shape)
+            print(gather_inds.shape)
+            temp_nf = torch.zeros(c_, n_)
+            torch.gather(parent_weight, 1, gather_inds, out=temp_nf)
+            self.nf_weight = nn.Parameter(temp_nf + (U * torch.randn_like(temp_nf)))
+        else:
+            raise NotImplementedError()
 
         def nf_transform_(self, x):
             # x: N, c_, n_
@@ -203,8 +220,9 @@ class FGL(nn.Module):
             A = torch.tensor(padded_adj_list).long()  # N, T
             self.density = mask.sum().item() / np.prod(mask.shape)
             self.total_length = self.lengths.sum().item()
-            if (optimization != "none") and (self.density > float(optimization[6:])):
+            if (optimization != "none") and (self.density > float(optimization[6:])):  # Padded
                 print("FGL: Using padded variant: density={}".format(self.density))
+                raise NotImplementedError("Padded version has a bug due to backpropagation through a hadamard product with 0 (in self.mask)")
                 self.register_buffer('A', A)
                 if reduction == "learn":
                     self.mask_weight = nn.Parameter(torch.randn_like(mask, dtype=torch.float))
@@ -230,7 +248,7 @@ class FGL(nn.Module):
                 mask = mask.unsqueeze(2)
                 self.register_buffer('mask', mask)
 
-            else:
+            else:  # Packed
                 print("FGL: Using packed variant: density={}".format(self.density))
 
                 sorted_len, sorted_idx = lengths.sort(0, descending=True)
@@ -262,6 +280,7 @@ class FGL(nn.Module):
                         ),
                         batch_first=True,
                     )  # outn, D, (N * c)
+                    masked_embo = masked_embo[original_idx]
                     if self.reduction == "max":
                         pooled_masked_embo = masked_embo.max(dim=1)[0]
                     else:

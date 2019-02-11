@@ -70,6 +70,16 @@ def get_3d_convolution_adjacency(input_volume, kernel_sizes, strides, paddings):
     return output_volume, adjacency
 
 
+def random_graph_adjacency_list(inn, outn, density=0.0002):
+    adj = [[i] for i in range(outn)]
+    for i in range(inn):
+        adj[np.random.randint(0, outn)].append(i)  # Ensure every input has 1 parent.
+    for j in range(outn):
+        count = 1 + int(abs(np.random.normal(density, density / 2)) * inn)
+        adj[j].extend(list(set(np.random.randint(0, outn, size=count).tolist())))
+    return adj
+
+
 def random_tree_adjacency_list(inn, outn):
     adj = [[] for _ in range(outn)]
     for i in range(inn):
@@ -161,7 +171,6 @@ def multi_key_infinite_iter(iters):
     while True:
         temp_time = time.time()
         ans = {k: next(loader) for k, loader in infinite_iters.items()}
-        print("Loading took {}".format(time.time() - temp_time))
         yield ans
 
 

@@ -128,6 +128,7 @@ def evaluate(args, model, loader):
     return metrics
 
 
+to_break = False
 def train_one_epoch(args, model, optimizer, loader, tobreak=False):
     nclasses = len(args.meta['c2i'])
     metrics = {
@@ -146,7 +147,7 @@ def train_one_epoch(args, model, optimizer, loader, tobreak=False):
         loss = F.cross_entropy(cpred, cvec)
         optimizer.zero_grad()
         loss.backward()
-        if tobreak:
+        if to_break:
             import pdb; pdb.set_trace()
         optimizer.step()
         metrics['loss'] += N * loss.item()
@@ -170,6 +171,13 @@ def run_single_split(args, split, output_dir="."):
     if args.debug:
         test_dset.n = DEBUG_N
         train_dset.n = DEBUG_N
+    print("Starting preloading")
+    tic = time.time()
+    if args.not_lazy:
+        train_dset.preload(count=args.num_workers)
+        test_dset.preload(count=args.num_workers)
+    print("Preloading took {}s".format(time.time() - tic))
+
     test_loader = torch.utils.data.DataLoader(test_dset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
     train_loader = torch.utils.data.DataLoader(train_dset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 
@@ -246,7 +254,12 @@ def run_single_split(args, split, output_dir="."):
     torch.save(train_metrics_per_epoch, os.path.join(output_dir, "train_metrics_per_epoch.checkpoint"))
     torch.save(test_metrics_per_epoch, os.path.join(output_dir, "test_metrics_per_epoch.checkpoint"))
     torch.save(best_test_metrics, os.path.join(output_dir, "best_test_metrics.checkpoint"))
-
+    print("Starting unload")
+    tic = time.time()
+    if args.not_lazy:
+        train_dset.unload()
+        test_dset.unload()
+    print("Unloaded in {}s".format(time.time() - tic))
     return train_metrics_per_epoch, test_metrics_per_epoch, best_test_metrics
 
 

@@ -13,7 +13,7 @@ torch-scatter (https://github.com/rusty1s/pytorch_scatter)
 ### Neurovault datasets
 `wget http://cogspaces.github.io/assets/data/hcp_mask.nii.gz`
 `python -m data.get_data [dataset names] --fetch --stats` will save datasets to `/data/neurovault/`
-
+`python -m data.upsample_data` will upsample camcan and brainomics to the MNI152 template downloaded above.
 ### HCP datasets
 `python -m data.download_hcp [hcp location]`. Read the file to understand whats going on. (The variables you'll need to change to configure stuff is at the top of the code)
 

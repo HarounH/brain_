@@ -41,6 +41,7 @@ from utils.utils import (
 
 )
 warnings.simplefilter("ignore")
+from joblib import Parallel, delayed
 
 
 class Dataset(TorchDataset):
@@ -53,6 +54,7 @@ class Dataset(TorchDataset):
             both: perform both types of normalization
         '''
         assert normalization in ['none', '11', '0c', 'both']
+        self.preloaded = False
         self.df = df
         self.meta = meta
         self.mu = meta['s2mu'][s].astype(np.float32)  # mean_image
@@ -65,12 +67,12 @@ class Dataset(TorchDataset):
         self.brain_mask = brain_mask = downsampled_brain_mask if downsampled else original_brain_mask
         self.brain_mask_numpy = downsampled_brain_mask_numpy if downsampled else original_brain_mask_numpy
 
-        if masked:
-            self.mu = masking.apply_mask(nibabel.Nifti1Image(self.mu, self.brain_mask.affine), self.brain_mask)
-            self.std = masking.apply_mask(nibabel.Nifti1Image(self.std, self.brain_mask.affine), self.brain_mask)
-            self.mul_mask = 1.0
-        else:
-            self.mul_mask = self.brain_mask_numpy
+        # if masked:
+        #     self.mu = masking.apply_mask(nibabel.Nifti1Image(self.mu, self.brain_mask.affine), self.brain_mask)
+        #     self.std = masking.apply_mask(nibabel.Nifti1Image(self.std, self.brain_mask.affine), self.brain_mask)
+        #     self.mul_mask = 1.0
+        # else:
+        #     self.mul_mask = self.brain_mask_numpy
 
         if normalization == 'none':
             def nf_(x):
@@ -88,36 +90,35 @@ class Dataset(TorchDataset):
 
         self.normalization_func = nf_
 
-        self.not_lazy = not_lazy
-        if not_lazy:
-            def load_image(filename):
-                img = nibabel.load(image_file)
-                if self.masked:
-                    this_data = masking.apply_mask(img, self.brain_mask).astype(np.float32)
-                else:
-                    this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
-                return this_data
-            self.data = np.stack([self.normalization_func(load_img(self.df.iloc[idx])) for i in range(self.n)])
-
     def __len__(self):
         return self.n
 
+    def preload(self, count=4):
+        self.zipped = Parallel(n_jobs=count)(delayed(lambda i: self[i])(i) for i in range(len(self)))
+        # self.zipped = [self[i] for i in range(len(self))]
+        self.preloaded = True
+
+    def unload(self):
+        del self.zipped
+        self.preloaded = False
+
     def __getitem__(self, idx):
+        if self.preloaded:
+            return self.zipped[idx]
+
         loc = self.df.iloc[idx]
         image_file = loc.z_map
         study = self.meta['s2i'][loc.study]
         task = self.meta['t2i'][loc.task]
         contrast = self.meta['c2i'][loc.contrast]
-        if self.not_lazy:
-            return self.data[idx], study, task, contast
-
         img = nibabel.load(image_file)
-
+        # try:
         if self.masked:
             this_data = masking.apply_mask(img, self.brain_mask).astype(np.float32)
         else:
             this_data = np.nan_to_num(img.get_data(), copy=False).astype(np.float32)
-
+        # except:
+        #     import pdb; pdb.set_trace()
         return self.normalization_func(this_data), study, task, contrast
 
 
@@ -308,6 +309,13 @@ def get_splits(study, outer_k, inner_k, seed, random_outer=None, random_inner=0.
     meta['si2ti'] = dict(meta['si2ti'])
     meta['ti2ci'] = dict(meta['ti2ci'])
 
+    meta['si2ci'] = {}
+    for si, tis in meta['si2ti'].items():
+        meta['si2ci'][si] = []
+        for ti in tis:
+            meta['si2ci'][si].extend(meta['ti2ci'][ti])
+        meta['si2ci'][si] = sorted(list(set(meta['si2ci'][si])))
+
     def subject_list_to_dataset(subjects):
         subdf = df[df['subject'].isin(subjects)]
         return Dataset(subdf, study, meta, masked=masked, downsampled=downsampled, normalization=normalization, not_lazy=not_lazy)
@@ -335,6 +343,102 @@ def get_splits(study, outer_k, inner_k, seed, random_outer=None, random_inner=0.
     return splits, meta
 
 
+def get_multi_study_splits(studies, outer_k, inner_k, seed, random_outer=None, random_inner=0.2, masked=False, downsampled=False, normalization='none', not_lazy=False):
+    # if random_inner is a float, that much fraction is used for validation,
+    # if its None, then inner_k equal splits are made.
+    # If random_outer is None, then mutually exclusive outer_k splits are made.
+    # If random_outer is a float, then outer_k random outer splits are made.
+    # assert(outer_k > 1 and inner_k > 1)
+    if not(downsampled):
+        dataframe_csv_file = original_dataframe_csv_file
+        statistics_pkl = original_statistics_pkl
+    else:
+        dataframe_csv_file = downsampled_dataframe_csv_file
+        statistics_pkl = downsampled_statistics_pkl
+
+    main_df = pd.read_csv(dataframe_csv_file)
+    stats = pd.read_pickle(statistics_pkl)
+    stats.set_index(keys=['study'], drop=False, inplace=True)
+    stats_dict = stats.to_dict(orient='index')
+
+    meta = {}
+    meta['s2i'] = {}
+    meta['t2i'] = {}
+    meta['c2i'] = {}
+    meta['i2s'] = {}
+    meta['i2t'] = {}
+    meta['i2c'] = {}
+    meta['si2ti'] = defaultdict(lambda: [])
+    meta['ti2ci'] = defaultdict(lambda: [])
+    meta['s2mu'] = {}
+    meta['s2std'] = {}
+    splits_by_study = {}
+
+    for study in studies:
+        df = main_df.loc[main_df.study == study]
+        meta['s2i'][study] = len(meta['s2i'])
+        meta['i2s'][meta['s2i'][study]] = study
+        study_df = df.loc[df.study == study]
+        si = meta['s2i'][study]
+        tasks_arr = study_df['task'].unique().tolist()
+        for task in tasks_arr:
+            if task not in meta['t2i']:
+                meta['t2i'][task] = len(meta['t2i'])
+                meta['i2t'][meta['t2i'][task]] = task
+            ti = meta['t2i'][task]
+            meta['si2ti'][si].append(ti)
+            contrast_list = study_df.loc[study_df.task == task].contrast.unique().tolist()
+
+            for contrast in contrast_list:
+                if contrast not in meta['c2i']:
+                    meta['c2i'][contrast] = len(meta['c2i'])
+                    meta['i2c'][meta['c2i'][contrast]] = contrast
+                ci = meta['c2i'][contrast]
+                meta['ti2ci'][ti].append(ci)
+        # print("For {} we have tasks:{}".format(study, tasks_arr))
+        meta['s2mu'][study] = stats_dict[study]['mean_image']
+        meta['s2std'][study] = stats_dict[study]['std_image']
+
+        def subject_list_to_dataset(subjects):
+            subdf = df[df['subject'].isin(subjects)]
+            return Dataset(subdf, study, meta, masked=masked, downsampled=downsampled, normalization=normalization, not_lazy=not_lazy)
+
+        np.random.seed(seed)  # Ensures same split.
+        subjects = np.random.permutation(df.subject.unique().tolist()).tolist()
+        if random_outer is None:
+            outer_subject_splits = kfold_list_split(subjects, outer_k)
+        else:
+            outer_subject_splits = random_splits(subjects, outer_k, random_outer)
+        subject_splits = []
+        splits = []
+        for (train_val_subjects, test_subjects) in outer_subject_splits:
+            if random_inner is None:
+                inner_subject_splits = kfold_list_split(train_val_subjects, inner_k)
+            else:
+                inner_subject_splits = random_splits(train_val_subjects, inner_k, random_inner)
+            test_dset = subject_list_to_dataset(test_subjects)
+            inner_dsets = []
+            for (train_subjects, val_subjects) in inner_subject_splits:
+                train_dset = subject_list_to_dataset(train_subjects)
+                val_dset = subject_list_to_dataset(val_subjects)
+                inner_dsets.append({'train': train_dset, 'val': val_dset,})
+            splits.append({'test': test_dset, 'splits': inner_dsets})
+        splits_by_study[study] = splits
+
+    # Convert them into dicts to keep them serializable
+    meta['si2ti'] = dict(meta['si2ti'])
+    meta['ti2ci'] = dict(meta['ti2ci'])
+    meta['si2ci'] = {}
+    for si, tis in meta['si2ti'].items():
+        meta['si2ci'][si] = []
+        for ti in tis:
+            meta['si2ci'][si].extend(meta['ti2ci'][ti])
+        meta['si2ci'][si] = sorted(list(set(meta['si2ci'][si])))
+
+    return splits_by_study, meta
+
+
 if __name__ == '__main__':
     splits, meta = get_splits('archi', 5, 5, 666)
+    splits_by_study, meta2 = get_multi_study_splits(['archi', 'la5c'], 5, 5, 666)
     import pdb; pdb.set_trace()

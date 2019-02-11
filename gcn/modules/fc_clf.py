@@ -48,10 +48,12 @@ class Linear(nn.Module):
         else:
             in_features = constants.original_masked_nnz
         net = []
-        net.append(weight_norm(nn.Linear(int(in_features), 128)))
-        if args.non_linear:
-            net.append(nn.Tanh())
-        net.append(weight_norm(nn.Linear(128, len(args.meta['c2i']))))
+        self.sizes = [int(in_features), 512, 256, 128, len(args.meta['c2i'])]
+        # self.sizes = [int(in_features), 128, len(args.meta['c2i'])]
+        for i in range(1, len(self.sizes)):
+            net.append(weight_norm(nn.Linear(self.sizes[i - 1], self.sizes[i])))
+            if args.non_linear:
+                net.append(nn.Tanh())
         self.net = nn.Sequential(
             *(net)
         )
