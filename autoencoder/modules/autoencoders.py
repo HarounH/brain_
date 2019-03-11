@@ -11,11 +11,12 @@ from autoencoder.modules import (
 def parse_model_specs(args):
     if args.encoder_type.startswith('fgl'):
         if len(args.encoder_type) > 3:
+            raise NotImplementedError('Encoder decoder need different specs... Please implement different classes for desired spec')
             args.encoder_type, args.op_order, args.reduction, args.optimization = args.encoder_type.split('_')
         else:
             args.op_order = "213"  # For encoder. decoder is hard coded with 132 i think.
             args.reduction = "sum"
-            args.optimization = "packed0.3"  # Always use tree optimization!
+            args.optimization = "packed1.0"  # Always use tree optimization!
         args.encoder_type = "fgl"
     else:
         args.non_linear = (args.encoder_type[-1] == "_")

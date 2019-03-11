@@ -1,26 +1,31 @@
 import os
+import argparse
+import time
 import multiprocessing
 import numpy as np
 import torch
+from torch import nn
+from torch.nn import functional as F
+import torch.optim as optim
+import sklearn.metrics as sk_metrics
 from clevr import (
     dataloaders,
 )
-import argparse
 from clevr.modules import (
     classifiers,
 )
-
+from utils import utils
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("name", type=str, choices=list(dataloaders.datasets.keys()), help="dataset to use")  # noqa
-    parser.add_argument("classifier_type", type=str, help="What classifier version to use",)
+    parser.add_argument("classifier_type", type=str, choices=list(classifiers.versions.keys()), help="What classifier version to use")  # noqa
     parser.add_argument("-ds", "--dset_seed", type=int, default=1337, help="Seed used for dataset")  # noqa
     parser.add_argument("-ok", "--outer_folds", type=int, default=10, help="Number of outer folds")  # noqa
     parser.add_argument("-df", "--outer_frac", type=float, default=0.3, help="Fraction of data to use as test in each outer fold")  # noqa
     parser.add_argument("-tf", "--training_frac", type=float, default=0.3, help="Fraction of data to use as training.")
 
-    parser.add_argument("--base_output", dest="base_output", default="clevr/outputs/multi_run/", help="Directory which will have folders per run")  # noqa
+    parser.add_argument("--base_output", dest="base_output", default="sanity_clevr/outputs/multi_run/", help="Directory which will have folders per run")  # noqa
     parser.add_argument("-r", "--run", dest='run_code', type=str, default='', help='Name this run. It will be part of file names for convenience')  # noqa
     parser.add_argument("--seed", dest="seed", type=int, metavar='<int>', default=1337, help="Random seed (default=1337)")  # noqa
 
@@ -35,6 +40,8 @@ def get_args():
     parser.add_argument("-b", "--batch_size", dest="batch_size", type=int, metavar='<int>', default=32, help="Batch size (default=32)")  # noqa
     parser.add_argument("-lr", "--learning_rate", dest="lr", type=float, metavar='<float>', default=0.001, help='Learning rate')  # noqa
     parser.add_argument("-wd", "--weight_decay", dest="weight_decay", type=float, metavar='<float>', default=0, help='Weight decay')  # noqa
+
+    parser.add_argument("--dbg", dest="debug", default=False, action="store_true", help="if true, then set to 40 datapoints in each dataset.")  # noqa
 
     args = parser.parse_args()
     args.num_workers = multiprocessing.cpu_count() // 3
@@ -90,6 +97,7 @@ def evaluate(args, model, loader):
     return metrics
 
 
+to_break = False
 def train_one_epoch(args, model, optimizer, loader, tobreak=False):
     n_classes = args.meta['n_classes']
     metrics = {

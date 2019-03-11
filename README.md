@@ -8,6 +8,7 @@ scikit
 nilearn
 nibabel
 torch-scatter (https://github.com/rusty1s/pytorch_scatter)
+pycairo 
 
 ## Getting Data
 ### Neurovault datasets

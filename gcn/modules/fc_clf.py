@@ -75,16 +75,19 @@ class DimensionReduced(nn.Module):
         super().__init__()
         self.args = args
         self.wtree = args.wtree
-        self.in_features = in_features = 16000  # Tunable
+        self.in_features = in_features = 1024  # Tunable
         labelling = self.wtree.cut(in_features)
         self.lengths = torch.tensor(np.unique(labelling, return_counts=True)[1]).float()
 
         self.labelling = torch.tensor(labelling).long().unsqueeze(0)
         self.net = nn.Sequential(
-            weight_norm(nn.Linear(int(in_features), len(args.meta['c2i'])))
+            weight_norm(nn.Linear(int(in_features), 256)),
+            weight_norm(nn.Linear(256, len(args.meta['c2i']))),
         )
+
         if loadable_state_dict is not None:
             self.load_state_dict(loadable_state_dict)
+
         self.reduced_x = None
 
 

@@ -48,6 +48,7 @@ versions = {
     'redfc': fc_clf.DimensionReduced,
     'cc': conv_clf.CoordConvClassifier0,
     'conv': conv_clf.ConvClassifier0,
+    'max': conv_clf.MaxConvClassifier0,
 }
 
 masked = {
@@ -66,6 +67,7 @@ masked = {
     'redfc': True,
     'cc': False,
     'conv': False,
+    'max': False,
 }
 
 scheduled = {
@@ -79,9 +81,10 @@ scheduled = {
     # 'fgl0': True,
     # 'fgl1': True,
     # 'rfgl0': True,
-    'fc': False,
-    'lin': False,
-    'redfc': False,
+    'fc': True,
+    'lin': True,
+    'redfc': True,
     'cc': True,
     'conv': True,
+    'max': True,
 }

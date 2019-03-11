@@ -6,7 +6,8 @@ from torch import nn
 class Factored(nn.Module):
     def __init__(self, args, loadable_state_dict=None):
         super().__init__()
-        sizes = [args.meta['s'] ** 2, 4, args.meta['n_classes']]
+        # sizes = [args.meta['s'] ** 2, 4, args.meta['n_classes']]
+        sizes = [args.meta['s'] ** 2, args.meta['n_classes']]
         net = []
         for i in range(len(sizes) - 1):
             net.append(nn.Linear(sizes[i], sizes[i + 1]))

@@ -118,7 +118,7 @@ class SomewhatClevr(TorchDataset):
         return self.n * 2
 
     def __getitem__(self, idx):
-        img = np.zeros((self.s, self.s))
+        img = np.zeros((self.s, self.s), dtype=np.float32)
         off = 0
         if idx < self.n:  # Square
             x, y = self.centers['square'][idx]

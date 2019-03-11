@@ -6,21 +6,42 @@ from torch.utils.data.sampler import SubsetRandomSampler
 from clevr import (
     notso,
     somewhat,
+    wedges,
+    grid,
 )
 
 datasets = {
-    'notso': notso.NotSoClevr,
-    'bignotso': lambda: notso.NotSoClevr(s=128, l=15),
-    'somewhat': somewhat.SomewhatClevr,
+    'notso': lambda args: notso.NotSoClevr(),
+    'bignotso': lambda args: notso.NotSoClevr(s=128, l=15),
+    'somewhat': lambda args: somewhat.SomewhatClevr(),
+    'wedges10000': lambda args: wedges.Wedges(n=10000),
+    'complexwedges10000': lambda args: wedges.ComplexWedges(args, n=10000),
+    'complexwedges50000': lambda args: wedges.ComplexWedges(args, n=50000),
+    'gradientwedges50000': lambda args: wedges.GradientWedges(args, n=50000),
+    'clustergrid50000': lambda args: grid.ClusterGrid(args, n=50000),
+    'randomgrid50000': lambda args: grid.RandomGrid(args, n=50000),
+    'randomclustergrid10000': lambda args: grid.RandomClusterGrid(args, n=10000),
+    'randomclustergrid50000': lambda args: grid.RandomClusterGrid(args, n=50000),
+    'iidxclustergrid50000': lambda args: grid.IIDXClusterGrid(args, n=50000),  # GOOD!
+    'iidhclustergrid50000': lambda args: grid.IIDHClusterGrid(args, n=50000),
+    'orderregiongrid50000': lambda args: grid.OrderRegionGrid(args, n=50000),
+    'bayesian16000': lambda args: grid.Bayesian(args, n=16000, n_regions=8, n_centers=10, prior_cov_mode='eye', likelihood_cov_mode='eye'),
+    'blockybayesian16000': lambda args: grid.Bayesian(args, n=16000, n_regions=8, n_centers=10, prior_cov_mode='infer', likelihood_cov_mode='infer'),
 }
 
 
 def get_splits(args):
     splits = []
     meta = {}
-    dataset = datasets[args.name]()
+    dataset = datasets[args.name](args)
     meta['n_classes'] = dataset.n_classes
     meta['s'] = dataset.s
+    for attr_name in ['r', 'regions']:
+        if hasattr(dataset, attr_name):
+            meta[attr_name] = getattr(dataset, attr_name)
+
+    if args.debug:
+        dataset.n = 40
     dataset_size = len(dataset)
     np.random.seed(args.dset_seed)
     for splitidx in range(args.outer_folds):

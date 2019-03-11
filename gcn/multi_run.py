@@ -45,6 +45,7 @@ def get_args():
     parser.add_argument("study", type=str, choices=constants.nv_ids.keys(), help="dataset to use")  # noqa
     parser.add_argument("-ok", "--outer_folds", type=int, metavar='<int>', default=10, help="Number of outer folds")  # noqa
     parser.add_argument("-df", "--outer_frac", type=float, metavar='<int>', default=0.3, help="Fraction of data to use as test in each outer fold")  # noqa
+    parser.add_argument('-tf', '--training_frac', type=float, default=0.7, help='fraction of data to use for training.')
     parser.add_argument("-ds", "--dset_seed", type=int, metavar='<int>', default=1337, help="Seed used for dataset")  # noqa
 
     # Data parameters... don't mess with this.
@@ -274,7 +275,7 @@ if __name__ == '__main__':
         1,
         args.dset_seed,
         random_outer=args.outer_frac,  # test, always. Not CV
-        random_inner=0.0,  # No validation.
+        random_inner=1 - args.outer_frac - args.training_frac,  # No validation.
         masked=classifiers.masked[args.classifier_type],
         downsampled=args.downsampled,
         normalization=args.normalization,

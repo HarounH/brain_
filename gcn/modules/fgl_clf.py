@@ -178,7 +178,7 @@ class EqSmallerClassifier(nn.Module):
         in_features = constants.original_masked_nnz
 
         self.node_sizes = [in_features, 1024, 256, 32]
-        self.channel_sizes = [1, 32, 64, 128]  # That mapping should be fairly fast
+        self.channel_sizes = [1, 10, 64, 128]  # That mapping should be fairly fast
         # self.channel_sizes = [1, 2, 4, 8]  # That mapping should be fairly fast
         adj_list = []
 
@@ -193,7 +193,6 @@ class EqSmallerClassifier(nn.Module):
         OP_ORDER = args.op_order  # "132"
         REDUCTION = args.reduction
         OPTIMIZATION = args.optimization
-        INITIALIZATION = 'eq'
         self.downsample0 = fgl.make_weight_normed_FGL(
             int(self.channel_sizes[0]),
             int(self.node_sizes[0]),
@@ -203,7 +202,6 @@ class EqSmallerClassifier(nn.Module):
             op_order=OP_ORDER,
             reduction=REDUCTION,
             optimization=OPTIMIZATION,
-            initialization=INITIALIZATION,
         )
         self.activation0 = nn.Sequential()
         self.downsample1 = fgl.make_weight_normed_FGL(
@@ -215,7 +213,6 @@ class EqSmallerClassifier(nn.Module):
             op_order=OP_ORDER,
             reduction=REDUCTION,
             optimization=OPTIMIZATION,
-            initialization=INITIALIZATION,
         )
         self.activation1 = nn.Sequential()
         self.downsample2 = fgl.make_weight_normed_FGL(
@@ -227,7 +224,6 @@ class EqSmallerClassifier(nn.Module):
             op_order=OP_ORDER,
             reduction=REDUCTION,
             optimization=OPTIMIZATION,
-            initialization=INITIALIZATION,
         )
         self.activation2 = nn.Sequential()
         self.fc = nn.Sequential(
