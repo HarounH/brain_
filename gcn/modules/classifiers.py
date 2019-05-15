@@ -10,6 +10,9 @@ fgl_optimization_map = {
     "randomfgl": "packed0.3",
     "smallfgl": "tree",
     "smallerfgl": "tree",
+    "residualsmallerfgl": "tree",
+    "1smallerfgl": "tree",
+    "2smallerfgl": "tree",
     "smaller2fgl": "tree",
     "eqsmallerfgl": "tree",
 }
@@ -35,7 +38,10 @@ def parse_model_specs(args):
 versions = {
     'randomfgl': fgl_clf.RandomFGLClassifier,
     'smallfgl': fgl_clf.SmallClassifier,
+    "residualsmallerfgl": fgl_clf.SmallerClassifier_Residual,
     'smallerfgl': fgl_clf.SmallerClassifier,
+    '1smallerfgl': fgl_clf.SmallerClassifier_1layer,
+    '2smallerfgl': fgl_clf.SmallerClassifier_2layer,
     'eqsmallerfgl': fgl_clf.EqSmallerClassifier,
     'smaller2fgl': fgl_clf.Smaller2Classifier,
     'fgl': fgl_clf.Classifier,
@@ -54,7 +60,10 @@ versions = {
 masked = {
     'randomfgl': True,
     'smallfgl': True,
+    "residualsmallerfgl": True,
     'smallerfgl': True,
+    '1smallerfgl': True,
+    '2smallerfgl': True,
     'eqsmallerfgl': True,
     'smaller2fgl': True,
     'fgl': True,
@@ -73,7 +82,10 @@ masked = {
 scheduled = {
     'randomfgl': True,
     'smallfgl': True,
+    "residualsmallerfgl": True,
     'smallerfgl': True,
+    '1smallerfgl': True,
+    '2smallerfgl': True,
     'eqsmallerfgl': True,
     'smaller2fgl': True,
     'fgl': True,

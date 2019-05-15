@@ -75,7 +75,7 @@ class DimensionReduced(nn.Module):
         super().__init__()
         self.args = args
         self.wtree = args.wtree
-        self.in_features = in_features = 1024  # Tunable
+        self.in_features = in_features = 1024 * 10  # Tunable
         labelling = self.wtree.cut(in_features)
         self.lengths = torch.tensor(np.unique(labelling, return_counts=True)[1]).float()
 

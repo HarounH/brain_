@@ -183,6 +183,7 @@ def run_single_split(args, split, output_dir="."):
     train_loader = torch.utils.data.DataLoader(train_dset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
 
     model = classifiers.versions[args.classifier_type](args, loadable_state_dict=None)
+    # import pdb; pdb.set_trace()
     if args.cuda:
         model = model.cuda()
     if args.dataparallel:
@@ -281,6 +282,7 @@ if __name__ == '__main__':
         normalization=args.normalization,
         not_lazy=args.not_lazy
     )
+    # import pdb; pdb.set_trace()
     print("Obtained splits")
     args.meta = meta
     args.wtree = constants.get_wtree()

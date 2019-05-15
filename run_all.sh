@@ -8,12 +8,33 @@
 # python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 50 -ct conv_ -ok 10 -r camcan0 --not_lazy
 # python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 50 -ct cc -ok 10 -r camcan0 --not_lazy
 # python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 20 -ct smallerfgl_213_sum_tree -ok 10 -r camcan0 --not_lazy
-python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 30 -ct redfc -ok 10 -r camcan0 --not_lazy
-python -m gcn.multi_run archi --cuda -dp -mine 10 -maxe 30 -ct redfc -ok 10 -r archi0 --not_lazy
-python -m gcn.multi_run la5c --cuda -dp -mine 10 -maxe 30 -ct redfc -ok 10 -r la5c0 --not_lazy
-python -m gcn.multi_run brainomics --cuda -dp -mine 10 -maxe 30 -ct redfc -ok 10 -r brainomics0 --not_lazy
-python -m gcn.multi_run hcp --cuda -dp -mine 10 -maxe 30 -ct redfc -ok 10 -r hcp0
+# python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 50 -ct redfc -ok 10 -r camcan0 --not_lazy
+# python -m gcn.multi_run archi --cuda -dp -mine 10 -maxe 50 -ct redfc -ok 10 -r archi0 --not_lazy
+# python -m gcn.multi_run la5c --cuda -dp -mine 10 -maxe 50 -ct redfc -ok 10 -r la5c0 --not_lazy
+# python -m gcn.multi_run brainomics --cuda -dp -mine 10 -maxe 50 -ct redfc -ok 10 -r brainomics0 --not_lazy
+# python -m gcn.multi_run hcp --cuda -dp -mine 10 -maxe 50 -ct redfc -ok 10 -r hcp0
 
+
+# Ablation start
+python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 20 -ct residualsmallerfgl_213_sum_tree -ok 4 -r camcan0 --not_lazy
+python -m gcn.multi_run archi --cuda -dp -mine 10 -maxe 20 -ct residualsmallerfgl_213_sum_tree -ok 4 -r archi0 --not_lazy
+python -m gcn.multi_run la5c --cuda -dp -mine 10 -maxe 20 -ct residualsmallerfgl_213_sum_tree -ok 4 -r la5c0 --not_lazy
+python -m gcn.multi_run brainomics --cuda -dp -mine 10 -maxe 20 -ct residualsmallerfgl_213_sum_tree -ok 4 -r brainomics0 --not_lazy
+
+# python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 20 -ct 1smallerfgl_213_sum_tree -ok 4 -r camcan0 --not_lazy
+# python -m gcn.multi_run archi --cuda -dp -mine 10 -maxe 20 -ct 1smallerfgl_213_sum_tree -ok 4 -r archi0 --not_lazy
+# python -m gcn.multi_run la5c --cuda -dp -mine 10 -maxe 20 -ct 1smallerfgl_213_sum_tree -ok 4 -r la5c0 --not_lazy
+# python -m gcn.multi_run brainomics --cuda -dp -mine 10 -maxe 20 -ct 1smallerfgl_213_sum_tree -ok 4 -r brainomics0 --not_lazy
+#
+# python -m gcn.multi_run camcan --cuda -dp -mine 10 -maxe 20 -ct 2smallerfgl_213_sum_tree -ok 4 -r camcan0 --not_lazy
+# python -m gcn.multi_run archi --cuda -dp -mine 10 -maxe 20 -ct 2smallerfgl_213_sum_tree -ok 4 -r archi0 --not_lazy
+# python -m gcn.multi_run la5c --cuda -dp -mine 10 -maxe 20 -ct 2smallerfgl_213_sum_tree -ok 4 -r la5c0 --not_lazy
+# python -m gcn.multi_run brainomics --cuda -dp -mine 10 -maxe 20 -ct 2smallerfgl_213_sum_tree -ok 4 -r brainomics0 --not_lazy
+#
+# python -m gcn.multi_run hcp --cuda -dp -mine 10 -maxe 20 -ct 1smallerfgl_213_sum_tree -ok 4 -r hcp0
+# python -m gcn.multi_run hcp --cuda -dp -mine 10 -maxe 20 -ct 2smallerfgl_213_sum_tree -ok 4 -r hcp0
+python -m gcn.multi_run hcp --cuda -dp -mine 10 -maxe 20 -ct residualsmallerfgl_213_sum_tree -ok 4 -r hcp0
+# Ablation end
 
 # brainomics
 # python -m gcn.multi_run brainomics --cuda -dp -mine 10 -maxe 30 -ct fc -ok 10 -r brainomics0 --not_lazy
